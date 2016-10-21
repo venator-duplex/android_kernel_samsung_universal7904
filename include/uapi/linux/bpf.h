@@ -495,6 +495,12 @@ enum bpf_func_id {
 	BPF_FUNC_set_hash_invalid,
 
 	/**
+	 * bpf_get_numa_node_id()
+	 * Returns the id of the current NUMA node.
+	 */
+	BPF_FUNC_get_numa_node_id,
+
+	/**
 	 * int bpf_probe_read_str(void *dst, int size, const void *unsafe_ptr)
 	 *     Copy a NUL terminated string from unsafe address. In case the string
 	 *     length is smaller than size, the target is not padded with further NUL
