@@ -132,7 +132,8 @@ enum bpf_attach_type {
 	BPF_CGROUP_INET_EGRESS,
 	BPF_CGROUP_INET_SOCK_CREATE,
 	BPF_CGROUP_SOCK_OPS,
-	BPF_CGROUP_SMAP_INGRESS,
+	BPF_SK_SKB_STREAM_PARSER,
+	BPF_SK_SKB_STREAM_VERDICT,
 	__MAX_BPF_ATTACH_TYPE
 };
 
@@ -263,7 +264,6 @@ union bpf_attr {
 		__u32		attach_bpf_fd;	/* eBPF program to attach */
 		__u32		attach_type;
 		__u32		attach_flags;
-		__u32		attach_bpf_fd2;
 	};
 
 	struct { /* anonymous struct used by BPF_PROG_TEST_RUN command */
@@ -619,14 +619,11 @@ union bpf_attr {
  *     @flags: reserved for future use
  *     Return: SK_REDIRECT
  *
- * int bpf_sock_map_update(skops, map, key, flags, map_flags)
+ * int bpf_sock_map_update(skops, map, key, flags)
  *	@skops: pointer to bpf_sock_ops
  *	@map: pointer to sockmap to update
  *	@key: key to insert/update sock in map
  *	@flags: same flags as map update elem
- *	@map_flags: sock map specific flags
- *	   bit 1: Enable strparser
- *	   other bits: reserved
  *
  * int skb_load_bytes_relative(const struct sk_buff *skb, u32 offset, void *to, u32 len, u32 start_header)
  * 	Description
