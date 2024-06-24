@@ -83,7 +83,7 @@ static inline int strp_peek_len(struct strparser *strp)
 {
 	struct socket *sock = strp->sk->sk_socket;
 
-	return sock->ops->peek_len(sock);
+	/*return sock->ops->peek_len(sock);*/
 }
 
 /* Lower socket lock held */
@@ -345,7 +345,7 @@ static int strp_read_sock(struct strparser *strp)
 	desc.count = 1; /* give more than one skb per call */
 
 	/* sk should be locked here, so okay to do read_sock */
-	sock->ops->read_sock(strp->sk, &desc, strp_recv);
+	/*sock->ops->read_sock(strp->sk, &desc, strp_recv);*/
 
 	desc.error = strp->cb.read_sock_done(strp, desc.error);
 
@@ -437,8 +437,8 @@ int strp_init(struct strparser *strp, struct sock *csk,
 	if (!cb || !cb->rcv_msg || !cb->parse_msg)
 		return -EINVAL;
 
-	if (!sock->ops->read_sock || !sock->ops->peek_len)
-		return -EAFNOSUPPORT;
+	/*if (!sock->ops->read_sock || !sock->ops->peek_len)
+		return -EAFNOSUPPORT;*/
 
 	memset(strp, 0, sizeof(*strp));
 
