@@ -2899,13 +2899,7 @@ static int check_ld_imm(struct bpf_verifier_env *env, struct bpf_insn *insn)
 		return err;
 
 	if (insn->src_reg == 0) {
-		/* generic move 64-bit immediate into a register,
-		 * only analyzer needs to collect the ld_imm value.
-		 */
 		u64 imm = ((u64)(insn + 1)->imm << 32) | (u32)insn->imm;
-
-		if (!env->analyzer_ops)
-			return 0;
 
 		regs[insn->dst_reg].type = SCALAR_VALUE;
 		__mark_reg_known(&regs[insn->dst_reg], imm);
