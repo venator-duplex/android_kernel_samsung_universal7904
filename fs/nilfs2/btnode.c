@@ -59,13 +59,12 @@ nilfs_btnode_create_block(struct address_space *btnc, __u64 blocknr)
 		 * used to manage its allocation state (if not, the buffer
 		 * clearing of an abandoned b-tree node is missing somewhere).
 		 */
-		nilfs_error(inode->i_sb,
+		nilfs_error(inode->i_sb, __func__,
 			    "state inconsistency probably due to duplicate use of b-tree node block address %llu (ino=%lu)",
 			    (unsigned long long)blocknr, inode->i_ino);
 		goto failed;
 	}
 	memset(bh->b_data, 0, i_blocksize(inode));
-	bh->b_bdev = inode->i_sb->s_bdev;
 	bh->b_blocknr = blocknr;
 	set_buffer_mapped(bh);
 	set_buffer_uptodate(bh);
@@ -130,7 +129,6 @@ int nilfs_btnode_submit_block(struct address_space *btnc, __u64 blocknr,
 		goto found;
 	}
 	set_buffer_mapped(bh);
-	bh->b_bdev = inode->i_sb->s_bdev;
 	bh->b_blocknr = pblocknr; /* set block address for read */
 	bh->b_end_io = end_buffer_read_sync;
 	get_bh(bh);
