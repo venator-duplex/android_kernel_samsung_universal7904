@@ -395,7 +395,7 @@ lookup_protocol:
 	if (sk->sk_prot->init) {
 		err = sk->sk_prot->init(sk);
 		if (err) {
-+			goto out_sk_release;
+			goto out_sk_release;
 		}
 	}
 
