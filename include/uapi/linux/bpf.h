@@ -128,7 +128,6 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_SK_SKB,
 	BPF_PROG_TYPE_CGROUP_DEVICE,
 	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
-	BPF_PROG_TYPE_CGROUP_SYSCTL = 23,
 };
 
 enum bpf_attach_type {
@@ -1066,12 +1065,6 @@ struct bpf_cgroup_dev_ctx {
 	__u32 access_type; /* (access << 16) | type */
 	__u32 major;
 	__u32 minor;
-};
-
-struct bpf_sysctl {
-	__u32	write;		/* Sysctl is being read (= 0) or written (= 1).
-				 * Allows 1,2,4-byte read, but no write.
-				 */
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */
