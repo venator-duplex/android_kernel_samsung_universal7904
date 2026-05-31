@@ -644,9 +644,9 @@
 						 "ABOX SPEEDY Capture", "VINPUTFM",
 						 // "SPK", "ABOX UAIF3 Playback",
 						 // "ABOX UAIF3 Capture", "VI";
-						 "SPK", "AIF Playback-8-34",
-						 "AIF Playback-8-34", "ABOX UAIF3 Playback",
-						 "ABOX UAIF3 Capture", "AIF Capture-8-34";
+						 "SPK", "AIF Playback-9-34",
+						 "AIF Playback-9-34", "ABOX UAIF3 Playback",
+						 "ABOX UAIF3 Capture", "AIF Capture-9-34";
 
 				rdma@0 {
 					cpu {

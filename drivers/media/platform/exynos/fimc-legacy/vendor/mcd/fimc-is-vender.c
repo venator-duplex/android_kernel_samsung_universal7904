@@ -565,11 +565,21 @@ void fimc_is_vender_check_hw_init_running(void)
 
 int fimc_is_vender_hw_init(struct fimc_is_vender *vender)
 {
-	bool ret = false;
+	int ret = 0;
 	struct device *dev  = NULL;
 	struct fimc_is_core *core;
 
+	if (!vender) {
+		err("vender is NULL");
+		return -EINVAL;
+	}
+
 	core = container_of(vender, struct fimc_is_core, vender);
+	if (!core->ischain[0].pdev) {
+		err("ischain pdev is NULL");
+		return -ENODEV;
+	}
+
 	dev = &core->ischain[0].pdev->dev;
 
 	info("hw init start\n");
@@ -633,12 +643,15 @@ int fimc_is_vender_hw_init(struct fimc_is_vender *vender)
 	ret = fimc_is_load_bin_on_boot();
 	if (ret) {
 		err("fimc_is_load_bin_on_boot is fail(%d)", ret);
+		fimc_is_load_ctrl_unlock();
+		is_hw_init_running = false;
+		return ret;
 	}
 	fimc_is_load_ctrl_unlock();
 	is_hw_init_running = false;
 
 	info("hw init done\n");
-	return 0;
+	return ret;
 }
 
 int fimc_is_vender_fw_prepare(struct fimc_is_vender *vender)
