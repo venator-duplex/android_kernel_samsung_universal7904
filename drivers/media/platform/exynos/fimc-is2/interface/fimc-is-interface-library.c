@@ -2129,7 +2129,12 @@ int fimc_is_load_ddk_bin(int loadType)
 	char bin_type[4] = {0};
 	struct fimc_is_binary bin;
 	os_system_func_t os_system_funcs[100];
-	struct device *device = &gPtr_lib_support.pdev->dev;
+	struct device *device;
+	if (!gPtr_lib_support.pdev) {
+		err_lib("gPtr_lib_support.pdev is NULL!\n");
+		return -ENODEV;
+	}
+	device = &gPtr_lib_support.pdev->dev;
 	/* fixup the memory attribute for every region */
 	ulong lib_addr;
 	ulong lib_isp = DDK_LIB_ADDR;
@@ -2159,6 +2164,12 @@ int fimc_is_load_ddk_bin(int loadType)
 	if (ret) {
 		err_lib("failed to load ISP library (%d)", ret);
 		return ret;
+	}
+
+	if (!bin.data || bin.size <= CDH_SIZE) {
+		err_lib("invalid ISP library data(%pK), size(%lu)", bin.data, bin.size);
+		release_binary(&bin);
+		return -EINVAL;
 	}
 
 	if (loadType == BINARY_LOAD_ALL) {
@@ -2199,6 +2210,13 @@ int fimc_is_load_ddk_bin(int loadType)
 	#endif
 		}while(0);
 	} else { /* loadType == BINARY_LOAD_DATA */
+		if (bin.size <= CAMERA_BINARY_DDK_DATA_OFFSET + CDH_SIZE ||
+			bin.size < CAMERA_BINARY_VRA_DATA_OFFSET + CAMERA_BINARY_VRA_DATA_SIZE) {
+			err_lib("invalid ISP data binary size(0x%lx)", bin.size);
+			release_binary(&bin);
+			return -EINVAL;
+		}
+
 		info_lib("binary info[%s] - type: D, from: %s\n",
 			bin_type,
 			was_loaded_by(&bin) ? "built-in" : "user-provided");
@@ -2242,7 +2260,12 @@ int fimc_is_load_vra_bin(int loadType)
 #else
 	int ret = 0;
 	struct fimc_is_binary bin;
-	struct device *device = &gPtr_lib_support.pdev->dev;
+	struct device *device;
+	if (!gPtr_lib_support.pdev) {
+		err_lib("gPtr_lib_support.pdev is NULL!\n");
+		return -ENODEV;
+	}
+	device = &gPtr_lib_support.pdev->dev;
 	/* fixup the memory attribute for every region */
 	ulong lib_isp = DDK_LIB_ADDR;
 	ulong lib_vra = VRA_LIB_ADDR;
@@ -2264,6 +2287,11 @@ int fimc_is_load_vra_bin(int loadType)
 	if (ret) {
 		err_lib("failed to load VRA library (%d)", ret);
 		return ret;
+	}
+	if (!bin.data || !bin.size || bin.size > LIB_VRA_CODE_SIZE) {
+		err_lib("invalid VRA library data(%pK), size(0x%lx)", bin.data, bin.size);
+		release_binary(&bin);
+		return -EINVAL;
 	}
 	info_lib("binary info[VRA] - type: C/D, addr: %#lx, size: 0x%lx from: %s\n",
 			lib_vra, bin.size,
@@ -2291,7 +2319,12 @@ int fimc_is_load_rta_bin(int loadType)
 	int ret = 0;
 #ifdef USE_RTA_BINARY
 	struct fimc_is_binary bin;
-	struct device *device = &gPtr_lib_support.pdev->dev;
+	struct device *device;
+	if (!gPtr_lib_support.pdev) {
+		err_lib("gPtr_lib_support.pdev is NULL!\n");
+		return -ENODEV;
+	}
+	device = &gPtr_lib_support.pdev->dev;
 
 	os_system_func_t os_system_funcs[100];
 	ulong lib_rta = RTA_LIB_ADDR;
@@ -2311,6 +2344,12 @@ int fimc_is_load_rta_bin(int loadType)
 	if (ret) {
 		err_lib("failed to load RTA library (%d)", ret);
 		return ret;
+	}
+
+	if (!bin.data || !bin.size || bin.size > LIB_RTA_CODE_SIZE) {
+		err_lib("invalid RTA library data(%pK), size(0x%lx)", bin.data, bin.size);
+		release_binary(&bin);
+		return -EINVAL;
 	}
 
 	if (loadType == BINARY_LOAD_ALL) {
@@ -2335,6 +2374,12 @@ int fimc_is_load_rta_bin(int loadType)
 			}
 		}while(0);
 	} else { /* loadType == BINARY_LOAD_DATA */
+		if (bin.size <= CAMERA_BINARY_RTA_DATA_OFFSET) {
+			err_lib("invalid RTA data binary size(0x%lx)", bin.size);
+			release_binary(&bin);
+			return -EINVAL;
+		}
+
 		info_lib("binary info[RTA] - type: D, from: %s\n",
 			was_loaded_by(&bin) ? "built-in" : "user-provided");
 		memcpy((void *)lib_rta + CAMERA_BINARY_RTA_DATA_OFFSET, bin.data + CAMERA_BINARY_RTA_DATA_OFFSET,
@@ -2469,6 +2514,7 @@ int fimc_is_load_bin_on_boot(void)
 {
 	struct fimc_is_lib_support *lib = &gPtr_lib_support;
 	int ret = 0;
+	int first_ret = 0;
 
 	spin_lock_init(&svc_slock);
 
@@ -2480,6 +2526,9 @@ int fimc_is_load_bin_on_boot(void)
 			err_lib("fimc_is_load_ddk_bin is fail(%d)", ret);
 		else
 			gPtr_lib_support.binary_code_load_flg |= BINARY_LOAD_DDK_DONE;
+
+		if (ret && !first_ret)
+			first_ret = ret;
 	}
 
 	if (!(gPtr_lib_support.binary_code_load_flg & BINARY_LOAD_RTA_DONE)) {
@@ -2488,9 +2537,12 @@ int fimc_is_load_bin_on_boot(void)
 			err_lib("fimc_is_load_rta_bin is fail(%d)", ret);
 		else
 			gPtr_lib_support.binary_code_load_flg |= BINARY_LOAD_RTA_DONE;
+
+		if (ret && !first_ret)
+			first_ret = ret;
 	}
 
-	return ret;
+	return first_ret;
 }
 
 int fimc_is_set_fw_names(char *fw_name, char *rta_fw_name)

@@ -3151,6 +3151,12 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 }
 
 static const struct bpf_func_proto *
+cg_sock_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+{
+	return bpf_base_func_proto(func_id);
+}
+
+static const struct bpf_func_proto *
 sock_addr_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
 	switch (func_id) {
@@ -4490,7 +4496,7 @@ const struct bpf_prog_ops lwt_xmit_prog_ops = {
 };
 
 const struct bpf_verifier_ops cg_sock_verifier_ops = {
-	.get_func_proto		= bpf_base_func_proto,
+	.get_func_proto		= cg_sock_func_proto,
 	.is_valid_access	= sock_filter_is_valid_access,
 	.convert_ctx_access	= sock_filter_convert_ctx_access,
 };

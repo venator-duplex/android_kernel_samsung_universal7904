@@ -3076,12 +3076,19 @@ static ssize_t camera_hw_init_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct fimc_is_vender *vender;
+	int ret;
 	int i;
+
+	if (!sysfs_core)
+		return -ENODEV;
 
 	vender = &sysfs_core->vender;
 
 	if (!check_module_init) {
-		fimc_is_vender_hw_init(vender);
+		ret = fimc_is_vender_hw_init(vender);
+		if (ret)
+			return ret;
+
 		check_module_init = true;
 #ifdef USE_SSRM_CAMERA_INFO
 		for (i = 0; i < FIMC_IS_SENSOR_COUNT; i++) {
