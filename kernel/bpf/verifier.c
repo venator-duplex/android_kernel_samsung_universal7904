@@ -188,6 +188,10 @@ static const char * const reg_type_str[] = {
 	[CONST_IMM]		= "imm",
 	[PTR_TO_PACKET]		= "pkt",
 	[PTR_TO_PACKET_END]	= "pkt_end",
+	[PTR_TO_SOCKET]		= "sock",
+	[PTR_TO_SOCKET_OR_NULL]	= "sock_or_null",
+	[PTR_TO_SOCK_COMMON]	= "sock_common",
+	[PTR_TO_SOCK_COMMON_OR_NULL] = "sock_common_or_null",
 };
 
 static void print_verifier_state(struct bpf_verifier_state *state)
@@ -531,6 +535,10 @@ static bool is_spillable_regtype(enum bpf_reg_type type)
 	case PTR_TO_PACKET_END:
 	case FRAME_PTR:
 	case CONST_PTR_TO_MAP:
+	case PTR_TO_SOCKET:
+	case PTR_TO_SOCKET_OR_NULL:
+	case PTR_TO_SOCK_COMMON:
+	case PTR_TO_SOCK_COMMON_OR_NULL:
 		return true;
 	default:
 		return false;
@@ -764,6 +772,18 @@ static int check_ptr_alignment(struct bpf_verifier_env *env,
 	return 0;
 }
 
+static int check_sock_access(struct bpf_verifier_env *env, int off, int size,
+			     enum bpf_access_type t, enum bpf_reg_type *reg_type)
+{
+	return 0;
+}
+
+static bool type_is_sk_pointer(enum bpf_reg_type type)
+{
+	return type == PTR_TO_SOCKET || type == PTR_TO_SOCKET_OR_NULL ||
+	       type == PTR_TO_SOCK_COMMON || type == PTR_TO_SOCK_COMMON_OR_NULL;
+}
+
 /* check whether memory at (regno + off) is accessible for t = (read | write)
  * if t==write, value_regno is a register which value is stored into memory
  * if t==read, value_regno is a register which will receive the value from memory
@@ -883,6 +903,12 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		}
 		err = check_packet_access(env, regno, off, size);
 		if (!err && t == BPF_READ && value_regno >= 0)
+			mark_reg_unknown_value(state->regs, value_regno);
+	} else if (type_is_sk_pointer(reg->type)) {
+		if (t == BPF_WRITE)
+			return -EACCES;
+		err = check_sock_access(env, off, size, t, &reg->type);
+		if (!err && value_regno >= 0)
 			mark_reg_unknown_value(state->regs, value_regno);
 	} else {
 		verbose("R%d invalid mem access '%s'\n",
@@ -1038,6 +1064,14 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 	} else if (arg_type == ARG_PTR_TO_CTX) {
 		expected_type = PTR_TO_CTX;
 		if (type != expected_type)
+			goto err_type;
+	} else if (arg_type == ARG_PTR_TO_SOCK_COMMON) {
+		expected_type = PTR_TO_SOCK_COMMON;
+		if (!type_is_sk_pointer(type))
+			goto err_type;
+	} else if (arg_type == ARG_PTR_TO_SOCKET) {
+		expected_type = PTR_TO_SOCKET;
+		if (type != expected_type && type != PTR_TO_CTX)
 			goto err_type;
 	} else if (arg_type == ARG_PTR_TO_STACK ||
 		   arg_type == ARG_PTR_TO_RAW_STACK) {
@@ -1325,6 +1359,10 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 			return -EINVAL;
 		}
 		regs[BPF_REG_0].map_ptr = meta.map_ptr;
+		regs[BPF_REG_0].id = ++env->id_gen;
+	} else if (fn->ret_type == RET_PTR_TO_SOCKET_OR_NULL) {
+		regs[BPF_REG_0].type = PTR_TO_SOCKET_OR_NULL;
+		regs[BPF_REG_0].max_value = regs[BPF_REG_0].min_value = 0;
 		regs[BPF_REG_0].id = ++env->id_gen;
 	} else {
 		verbose("unknown return type %d of func %d\n",
@@ -2199,8 +2237,17 @@ static void mark_map_reg(struct bpf_reg_state *regs, u32 regno, u32 id,
 {
 	struct bpf_reg_state *reg = &regs[regno];
 
-	if (reg->type == PTR_TO_MAP_VALUE_OR_NULL && reg->id == id) {
-		reg->type = type;
+	if ((reg->type == PTR_TO_MAP_VALUE_OR_NULL ||
+	     reg->type == PTR_TO_SOCKET_OR_NULL ||
+	     reg->type == PTR_TO_SOCK_COMMON_OR_NULL) &&
+	    reg->id == id) {
+		if (type == PTR_TO_MAP_VALUE && reg->type == PTR_TO_SOCKET_OR_NULL)
+			reg->type = PTR_TO_SOCKET;
+		else if (type == PTR_TO_MAP_VALUE &&
+			 reg->type == PTR_TO_SOCK_COMMON_OR_NULL)
+			reg->type = PTR_TO_SOCK_COMMON;
+		else
+			reg->type = type;
 		/* We don't need id from this point onwards anymore, thus we
 		 * should better reset it, so that state pruning has chances
 		 * to take effect.
@@ -2317,8 +2364,10 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	/* detect if R == 0 where R is returned from bpf_map_lookup_elem() */
 	if (BPF_SRC(insn->code) == BPF_K &&
 	    insn->imm == 0 && (opcode == BPF_JEQ || opcode == BPF_JNE) &&
-	    dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL) {
-		/* Mark all identical map registers in each branch as either
+	    (dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL ||
+	     dst_reg->type == PTR_TO_SOCKET_OR_NULL ||
+	     dst_reg->type == PTR_TO_SOCK_COMMON_OR_NULL)) {
+		/* Mark all identical registers in each branch as either
 		 * safe or unknown depending R == 0 or R != 0 conditional.
 		 */
 		mark_map_regs(this_branch, insn->dst_reg,
@@ -2397,6 +2446,17 @@ static bool may_access_skb(enum bpf_prog_type type)
 	case BPF_PROG_TYPE_SOCKET_FILTER:
 	case BPF_PROG_TYPE_SCHED_CLS:
 	case BPF_PROG_TYPE_SCHED_ACT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool is_compat_sock_ctx_prog(enum bpf_prog_type type)
+{
+	switch (type) {
+	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
+	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
 		return true;
 	default:
 		return false;
@@ -3041,6 +3101,8 @@ static int do_check(struct bpf_verifier_env *env)
 			}
 
 		} else if (class == BPF_ST) {
+			enum bpf_reg_type *prev_dst_type, dst_reg_type;
+
 			if (BPF_MODE(insn->code) != BPF_MEM ||
 			    insn->src_reg != BPF_REG_0) {
 				verbose("BPF_ST uses reserved fields\n");
@@ -3051,7 +3113,17 @@ static int do_check(struct bpf_verifier_env *env)
 			if (err)
 				return err;
 
-			if (is_ctx_reg(env, insn->dst_reg)) {
+			dst_reg_type = regs[insn->dst_reg].type;
+			if (dst_reg_type == PTR_TO_CTX &&
+			    is_compat_sock_ctx_prog(env->prog->type)) {
+				prev_dst_type = &env->insn_aux_data[insn_idx].ptr_type;
+				if (*prev_dst_type == NOT_INIT) {
+					*prev_dst_type = dst_reg_type;
+				} else if (*prev_dst_type != dst_reg_type) {
+					verbose("same insn cannot be used with different pointers\n");
+					return -EINVAL;
+				}
+			} else if (is_ctx_reg(env, insn->dst_reg)) {
 				verbose("BPF_ST stores into R%d context is not allowed\n",
 					insn->dst_reg);
 				return -EACCES;
@@ -3391,6 +3463,9 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			type = BPF_READ;
 		else if (insn->code == (BPF_STX | BPF_MEM | BPF_W) ||
 			 insn->code == (BPF_STX | BPF_MEM | BPF_DW))
+			type = BPF_WRITE;
+		else if (insn->code == (BPF_ST | BPF_MEM | BPF_W) ||
+			 insn->code == (BPF_ST | BPF_MEM | BPF_DW))
 			type = BPF_WRITE;
 		else
 			continue;

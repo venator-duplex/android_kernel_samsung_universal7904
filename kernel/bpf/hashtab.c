@@ -16,7 +16,8 @@
 #include <linux/rculist_nulls.h>
 #include "percpu_freelist.h"
 #define HTAB_CREATE_FLAG_MASK						\
-	(BPF_F_NO_PREALLOC | BPF_F_RDONLY | BPF_F_WRONLY)
+	(BPF_F_NO_PREALLOC | BPF_F_RDONLY | BPF_F_WRONLY |		\
+	 BPF_F_RDONLY_PROG | BPF_F_WRONLY_PROG)
 
 struct bucket {
 	struct hlist_nulls_head head;
@@ -765,6 +766,11 @@ static struct bpf_map_type_list htab_type __read_mostly = {
 	.type = BPF_MAP_TYPE_HASH,
 };
 
+static struct bpf_map_type_list devmap_hash_stub_type __read_mostly = {
+	.ops = &htab_ops,
+	.type = BPF_MAP_TYPE_DEVMAP_HASH,
+};
+
 /* Called from eBPF program */
 static void *htab_percpu_map_lookup_elem(struct bpf_map *map, void *key)
 {
@@ -835,6 +841,7 @@ static int __init register_htab_map(void)
 {
 	bpf_register_map_type(&htab_type);
 	bpf_register_map_type(&htab_percpu_type);
+	bpf_register_map_type(&devmap_hash_stub_type);
 	return 0;
 }
 late_initcall(register_htab_map);

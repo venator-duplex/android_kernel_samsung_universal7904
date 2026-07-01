@@ -1057,6 +1057,9 @@ static ssize_t store_boostpulse(struct cpufreq_interactive_tunables *tunables,
 
 	tunables->boostpulse_endtime = ktime_to_us(ktime_get()) +
 		tunables->boostpulse_duration_val;
+#ifdef CONFIG_SCHED_HMP
+	set_hmp_boostpulse(tunables->boostpulse_duration_val);
+#endif
 	trace_cpufreq_interactive_boost("pulse");
 	if (!tunables->boosted)
 		cpufreq_interactive_boost(tunables);

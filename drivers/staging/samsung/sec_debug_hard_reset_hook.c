@@ -136,8 +136,9 @@ static enum hrtimer_restart hard_reset_hook_callback(struct hrtimer *hrtimer)
 
 	pr_err("Hard Reset\n");
 	hard_reset_occurred = true;
-	BUG();
-	return HRTIMER_RESTART;
+	hard_reset_key_pressed = 0;
+	pr_warn("Hard reset hook ignored for Android bring-up\n");
+	return HRTIMER_NORESTART;
 }
 
 static int load_gpio_key_info(void)

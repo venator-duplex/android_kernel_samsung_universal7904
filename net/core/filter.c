@@ -1458,6 +1458,51 @@ static const struct bpf_func_proto bpf_skb_load_bytes_proto = {
 	.arg4_type	= ARG_CONST_STACK_SIZE,
 };
 
+BPF_CALL_5(bpf_skb_load_bytes_relative, const struct sk_buff *, skb,
+	   u32, offset, void *, to, u32, len, u32, start_header)
+{
+	u32 start;
+	void *ptr;
+
+	switch (start_header) {
+	case BPF_HDR_START_MAC:
+		start = skb_mac_header(skb) - skb->data;
+		break;
+	case BPF_HDR_START_NET:
+		start = skb_network_header(skb) - skb->data;
+		break;
+	default:
+		memset(to, 0, len);
+		return -EINVAL;
+	}
+
+	offset += start;
+	if (unlikely(offset > 0xffff))
+		goto err_clear;
+
+	ptr = skb_header_pointer(skb, offset, len, to);
+	if (unlikely(!ptr))
+		goto err_clear;
+	if (ptr != to)
+		memcpy(to, ptr, len);
+
+	return 0;
+err_clear:
+	memset(to, 0, len);
+	return -EFAULT;
+}
+
+static const struct bpf_func_proto bpf_skb_load_bytes_relative_proto = {
+	.func		= bpf_skb_load_bytes_relative,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
+	.arg2_type	= ARG_ANYTHING,
+	.arg3_type	= ARG_PTR_TO_RAW_STACK,
+	.arg4_type	= ARG_CONST_STACK_SIZE,
+	.arg5_type	= ARG_ANYTHING,
+};
+
 BPF_CALL_2(bpf_skb_pull_data, struct sk_buff *, skb, u32, len)
 {
 	/* Idea is the following: should the needed direct read/write
@@ -2569,6 +2614,18 @@ static const struct bpf_func_proto bpf_get_socket_uid_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 };
 
+BPF_CALL_1(bpf_sk_fullsock, struct sock *, sk)
+{
+	return (unsigned long)NULL;
+}
+
+static const struct bpf_func_proto bpf_sk_fullsock_proto = {
+	.func           = bpf_sk_fullsock,
+	.gpl_only       = false,
+	.ret_type       = RET_PTR_TO_SOCKET_OR_NULL,
+	.arg1_type      = ARG_PTR_TO_SOCK_COMMON,
+};
+
 static const struct bpf_func_proto *
 sk_filter_func_proto(enum bpf_func_id func_id)
 {
@@ -2655,6 +2712,8 @@ tc_cls_act_func_proto(enum bpf_func_id func_id)
 		return &bpf_get_smp_processor_id_proto;
 	case BPF_FUNC_skb_under_cgroup:
 		return &bpf_skb_under_cgroup_proto;
+	case BPF_FUNC_sk_fullsock:
+		return &bpf_sk_fullsock_proto;
 	default:
 		return sk_filter_func_proto(func_id);
 	}
@@ -2677,8 +2736,12 @@ static const struct bpf_func_proto *
 cg_skb_func_proto(enum bpf_func_id func_id)
 {
 	switch (func_id) {
+	case BPF_FUNC_sk_fullsock:
+		return &bpf_sk_fullsock_proto;
 	case BPF_FUNC_skb_load_bytes:
 		return &bpf_skb_load_bytes_proto;
+	case BPF_FUNC_skb_load_bytes_relative:
+		return &bpf_skb_load_bytes_relative_proto;
 	default:
 		return sk_filter_func_proto(func_id);
 	}
@@ -2690,8 +2753,6 @@ static bool __is_valid_access(int off, int size, enum bpf_access_type type)
 		return false;
 	/* The verifier guarantees that size > 0. */
 	if (off % size != 0)
-		return false;
-	if (size != sizeof(__u32))
 		return false;
 
 	return true;
@@ -2706,6 +2767,11 @@ static bool sk_filter_is_valid_access(int off, int size,
 	case offsetof(struct __sk_buff, data):
 	case offsetof(struct __sk_buff, data_end):
 		return false;
+	case offsetof(struct __sk_buff, sk):
+		if (type == BPF_WRITE || size != sizeof(__u64))
+			return false;
+		*reg_type = PTR_TO_SOCK_COMMON_OR_NULL;
+		break;
 	}
 
 	if (type == BPF_WRITE) {
@@ -2742,6 +2808,45 @@ static bool sock_filter_is_valid_access(int off, int size,
 		return false;
 
 	return true;
+}
+
+static bool compat_ctx_is_valid_access(int off, int size,
+				       enum bpf_access_type type,
+				       enum bpf_reg_type *reg_type,
+				       int ctx_size)
+{
+	if (off < 0 || off + size > ctx_size)
+		return false;
+
+	/* The verifier guarantees that size > 0. */
+	if (off % size != 0)
+		return false;
+
+	switch (size) {
+	case sizeof(__u8):
+	case sizeof(__u16):
+	case sizeof(__u32):
+	case sizeof(__u64):
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool sock_addr_filter_is_valid_access(int off, int size,
+					     enum bpf_access_type type,
+					     enum bpf_reg_type *reg_type)
+{
+	return compat_ctx_is_valid_access(off, size, type, reg_type,
+					  sizeof(struct bpf_sock_addr));
+}
+
+static bool sockopt_filter_is_valid_access(int off, int size,
+					   enum bpf_access_type type,
+					   enum bpf_reg_type *reg_type)
+{
+	return compat_ctx_is_valid_access(off, size, type, reg_type,
+					  sizeof(struct bpf_sockopt));
 }
 
 static int tc_cls_act_prologue(struct bpf_insn *insn_buf, bool direct_write,
@@ -2916,6 +3021,32 @@ static u32 sk_filter_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 				      offsetof(struct sk_buff, hash));
 		break;
 
+	case offsetof(struct __sk_buff, gso_segs):
+		/* dst_reg = skb_shinfo(skb)->gso_segs */
+#ifdef NET_SKBUFF_DATA_USES_OFFSET
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, head),
+				      dst_reg, src_reg,
+				      offsetof(struct sk_buff, head));
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, end),
+				      BPF_REG_AX, src_reg,
+				      offsetof(struct sk_buff, end));
+		*insn++ = BPF_ALU64_REG(BPF_ADD, dst_reg, BPF_REG_AX);
+#else
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, end),
+				      dst_reg, src_reg,
+				      offsetof(struct sk_buff, end));
+#endif
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct skb_shared_info, gso_segs),
+				      dst_reg, dst_reg,
+				      offsetof(struct skb_shared_info, gso_segs));
+		break;
+
+	case offsetof(struct __sk_buff, sk):
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, sk),
+				      dst_reg, src_reg,
+				      offsetof(struct sk_buff, sk));
+		break;
+
 	case offsetof(struct __sk_buff, mark):
 		BUILD_BUG_ON(FIELD_SIZEOF(struct sk_buff, mark) != 4);
 
@@ -3026,6 +3157,22 @@ static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
 	return insn - insn_buf;
 }
 
+static u32 compat_sock_filter_convert_ctx_access(enum bpf_access_type type,
+						 int dst_reg, int src_reg,
+						 int ctx_off,
+						 struct bpf_insn *insn_buf,
+						 struct bpf_prog *prog)
+{
+	struct bpf_insn *insn = insn_buf;
+
+	if (type == BPF_WRITE)
+		*insn++ = BPF_MOV64_REG(src_reg, src_reg);
+	else
+		*insn++ = BPF_MOV64_IMM(dst_reg, 0);
+
+	return insn - insn_buf;
+}
+
 static u32 tc_cls_act_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 					 int src_reg, int ctx_off,
 					 struct bpf_insn *insn_buf,
@@ -3105,6 +3252,18 @@ static const struct bpf_verifier_ops cg_sock_ops = {
 	.convert_ctx_access	= sock_filter_convert_ctx_access,
 };
 
+static const struct bpf_verifier_ops cg_sock_addr_ops = {
+	.get_func_proto		= sk_filter_func_proto,
+	.is_valid_access	= sock_addr_filter_is_valid_access,
+	.convert_ctx_access	= compat_sock_filter_convert_ctx_access,
+};
+
+static const struct bpf_verifier_ops cg_sockopt_ops = {
+	.get_func_proto		= sk_filter_func_proto,
+	.is_valid_access	= sockopt_filter_is_valid_access,
+	.convert_ctx_access	= compat_sock_filter_convert_ctx_access,
+};
+
 static struct bpf_prog_type_list sk_filter_type __read_mostly = {
 	.ops	= &sk_filter_ops,
 	.type	= BPF_PROG_TYPE_SOCKET_FILTER,
@@ -3135,6 +3294,16 @@ static struct bpf_prog_type_list cg_sock_type __read_mostly = {
 	.type	= BPF_PROG_TYPE_CGROUP_SOCK
 };
 
+static struct bpf_prog_type_list cg_sock_addr_type __read_mostly = {
+	.ops	= &cg_sock_addr_ops,
+	.type	= BPF_PROG_TYPE_CGROUP_SOCK_ADDR,
+};
+
+static struct bpf_prog_type_list cg_sockopt_type __read_mostly = {
+	.ops	= &cg_sockopt_ops,
+	.type	= BPF_PROG_TYPE_CGROUP_SOCKOPT,
+};
+
 static int __init register_sk_filter_ops(void)
 {
 	bpf_register_prog_type(&sk_filter_type);
@@ -3143,6 +3312,8 @@ static int __init register_sk_filter_ops(void)
 	bpf_register_prog_type(&xdp_type);
 	bpf_register_prog_type(&cg_skb_type);
 	bpf_register_prog_type(&cg_sock_type);
+	bpf_register_prog_type(&cg_sock_addr_type);
+	bpf_register_prog_type(&cg_sockopt_type);
 
 	return 0;
 }
