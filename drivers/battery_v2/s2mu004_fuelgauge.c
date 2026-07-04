@@ -1545,17 +1545,13 @@ static int s2mu004_fg_get_property(struct power_supply *psy,
 			}
 
 			if (fuelgauge->sleep_initial_update_of_soc) {
-				/* updated old capacity in case of resume */
+				/* Keep discharging resume on the atomic capacity path. */
 				if (fuelgauge->is_charging) {
 					fuelgauge->capacity_old = val->intval;
 					fuelgauge->sleep_initial_update_of_soc = false;
 					break;
-				} else if ((fuelgauge->vbatl_mode != VBATL_MODE_SW_VALERT) &&
-					((!fuelgauge->is_charging) && (fuelgauge->capacity_old >= val->intval))) {
-					fuelgauge->capacity_old = val->intval;
-					fuelgauge->sleep_initial_update_of_soc = false;
-					break;
 				}
+				fuelgauge->sleep_initial_update_of_soc = false;
 			}
 
 			if (fuelgauge->pdata->capacity_calculation_type &
