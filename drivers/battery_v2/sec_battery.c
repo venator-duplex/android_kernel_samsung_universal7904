@@ -242,6 +242,23 @@ static char *supply_list[] = {
 	"battery",
 };
 
+static int sec_bat_get_charge_full(struct sec_battery_info *battery)
+{
+	union power_supply_propval value = {0, };
+	int capacity_max;
+
+	psy_do_property(battery->pdata->fuelgauge_name, get,
+			POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN, value);
+
+	capacity_max = value.intval;
+	if (capacity_max <= 0)
+		capacity_max = 1000;
+	else if (capacity_max > 1000)
+		capacity_max = 1000;
+
+	return battery->pdata->battery_full_capacity * capacity_max;
+}
+
 char *sec_cable_type[SEC_BATTERY_CABLE_MAX] = {
 	"UNKNOWN",		/* 0 */
 	"NONE",			/* 1 */
@@ -7297,7 +7314,7 @@ static int sec_bat_get_property(struct power_supply *psy,
 		val->intval = value.intval;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
-		val->intval = battery->pdata->battery_full_capacity * 1000;
+		val->intval = sec_bat_get_charge_full(battery);
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 		val->intval = battery->pdata->battery_full_capacity * 1000;
