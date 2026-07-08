@@ -1958,6 +1958,20 @@ retry_private:
 			/* Prepare the waiter to take the rt_mutex. */
 			atomic_inc(&pi_state->refcount);
 			this->pi_state = pi_state;
+
+			/*
+			 * A non-top waiter may already own the target PI futex.
+			 * Reject that self-deadlock before proxy locking so we
+			 * do not enqueue a waiter which rt_mutex later tears down
+			 * through remove_waiter().
+			 */
+			if (unlikely(pi_state->owner == this->task)) {
+				this->pi_state = NULL;
+				free_pi_state(pi_state);
+				ret = -EDEADLK;
+				goto out_unlock;
+			}
+
 			ret = rt_mutex_start_proxy_lock(&pi_state->pi_mutex,
 							this->rt_waiter,
 							this->task);
