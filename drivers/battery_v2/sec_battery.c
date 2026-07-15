@@ -247,6 +247,29 @@ static int sec_bat_get_charge_full(struct sec_battery_info *battery)
 	union power_supply_propval value = {0, };
 	int capacity_max;
 
+#if defined(CONFIG_FG_FULLCAP_FROM_BATTERY)
+	struct capacity_measure_info *info = &battery->capacity_info;
+	s64 measured_uah;
+	int design_uah = battery->pdata->battery_full_capacity * 1000;
+
+	/*
+	 * capacity_max is the upper end of the fuel gauge's SOC scaling range,
+	 * not a learned battery capacity.  Only report CHARGE_FULL after the
+	 * software coulomb counter has completed a qualifying charge cycle.
+	 */
+	if (info->capacity_full > 0) {
+		/* capacity_full is accumulated in mA seconds. */
+		measured_uah = div_s64((s64)info->capacity_full * 1000, 3600);
+		if (measured_uah > 0 && measured_uah <= (s64)design_uah * 12 / 10)
+			return (int)measured_uah;
+	}
+#endif
+
+	/*
+	 * Before the first qualifying charge cycle, the software measurement is
+	 * empty. Keep the existing fuel-gauge capacity_max as a usable fallback
+	 * so Settings does not show an empty maximum-capacity field.
+	 */
 	psy_do_property(battery->pdata->fuelgauge_name, get,
 			POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN, value);
 
@@ -3747,6 +3770,22 @@ safety_time_end:
 }
 
 #if defined(CONFIG_FG_FULLCAP_FROM_BATTERY)
+static int sec_bat_estimate_full_capacity(struct capacity_measure_info *info)
+{
+	if (info->capacity_rep <= 0 || info->start_soc < 0 ||
+			info->start_soc >= 100)
+		return 0;
+
+	/*
+	 * capacity_rep is the net charge accumulated between start_soc and
+	 * full.  Scale that measured interval to 0-100% instead of filling the
+	 * unmeasured lower interval with the design capacity, which biases worn
+	 * batteries toward 100% health.
+	 */
+	return (int)div_s64((s64)info->capacity_rep * 100,
+			100 - info->start_soc);
+}
+
 static void sec_bat_measure_capacity(struct sec_battery_info *battery, struct timespec c_ts)
 {
 	static struct timespec old_ts = {0, };
@@ -3773,9 +3812,7 @@ static void sec_bat_measure_capacity(struct sec_battery_info *battery, struct ti
 	if (battery->status == POWER_SUPPLY_STATUS_DISCHARGING ||
 		battery->status == POWER_SUPPLY_STATUS_NOT_CHARGING) {
 		if (info->status == CAPACITY_MEASURE_UPDATING) {
-			int current_capacity;
-			current_capacity = design_cap * (info->start_soc * 3600 / 100);
-			info->capacity_full = info->capacity_rep + current_capacity;
+			info->capacity_full = sec_bat_estimate_full_capacity(info);
 			info->status = CAPACITY_MEASURE_UPDATED;
 			sprintf(data, "full capacity: %dmAs, %dmAh, charged cap: %dmAs, start_soc: %d, asoc: %d\n",
 				info->capacity_full, info->capacity_full/3600, info->capacity_rep, info->start_soc,
@@ -3817,9 +3854,7 @@ static void sec_bat_measure_capacity(struct sec_battery_info *battery, struct ti
 	if (battery->status == POWER_SUPPLY_STATUS_FULL) {
 		info->status = CAPACITY_MEASURE_UPDATING;
 		if (battery->charging_mode == SEC_BATTERY_CHARGING_NONE) {
-			int current_capacity;
-			current_capacity = design_cap * (info->start_soc * 3600 / 100);
-			info->capacity_full = info->capacity_rep + current_capacity;
+			info->capacity_full = sec_bat_estimate_full_capacity(info);
 			info->status = CAPACITY_MEASURE_UPDATED;
 			sprintf(data, "Full capacity: %dmAs, %dmAh, charged cap: %dmAs, start_soc: %d, asoc: %d\n",
 				info->capacity_full, info->capacity_full / 3600, info->capacity_rep, info->start_soc,
@@ -7214,6 +7249,11 @@ static int sec_bat_get_property(struct power_supply *psy,
 			} else
 #endif
 				val->intval = battery->status;
+
+			/* The first full check starts the top-off phase. */
+			if (val->intval == POWER_SUPPLY_STATUS_FULL &&
+					battery->charging_mode != SEC_BATTERY_CHARGING_NONE)
+				val->intval = POWER_SUPPLY_STATUS_CHARGING;
 		}
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_TYPE:
@@ -7338,8 +7378,12 @@ static int sec_bat_get_property(struct power_supply *psy,
 				val->intval = battery->capacity;
 			}
 #else
-			if (battery->status == POWER_SUPPLY_STATUS_FULL)
+			if (battery->status == POWER_SUPPLY_STATUS_FULL &&
+					battery->charging_mode == SEC_BATTERY_CHARGING_NONE)
 				val->intval = 100;
+			else if (battery->capacity >= 100 &&
+					battery->charging_mode != SEC_BATTERY_CHARGING_NONE)
+				val->intval = 99;
 			else
 				val->intval = battery->capacity;
 #endif
