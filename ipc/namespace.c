@@ -34,6 +34,13 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 	ns->ns.ops = &ipcns_operations;
 
 	atomic_set(&ns->count, 1);
+	/*
+	 * mqueue initialization creates a kernel mount and passes this
+	 * namespace owner to sget_userns().  Set it before mq_init_ns(),
+	 * otherwise CLONE_NEWIPC can dereference an uninitialized pointer.
+	 */
+	ns->user_ns = get_user_ns(user_ns);
+
 	err = mq_init_ns(ns);
 	if (err) {
 		ns_free_inum(&ns->ns);
@@ -45,8 +52,6 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 	sem_init_ns(ns);
 	msg_init_ns(ns);
 	shm_init_ns(ns);
-
-	ns->user_ns = get_user_ns(user_ns);
 
 	return ns;
 }
