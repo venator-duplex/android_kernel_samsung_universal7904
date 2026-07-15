@@ -68,5 +68,8 @@ void on_boot_completed(void)
     ksu_boot_completed = true;
     pr_info("on_boot_completed!\n");
     track_throne(true);
+    // Re-detect the signed manager after boot. The packages.list rename that
+    // normally crowns it can happen before ksu_boot_completed and be ignored.
+    track_throne(false);
     ksu_avc_spoof_late_init();
 }
