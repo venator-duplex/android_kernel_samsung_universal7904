@@ -239,7 +239,7 @@ static __always_inline bool check_v2_signature(char *path,
 	int i;
 	struct file *fp = ksu_filp_open_compat(path, O_RDONLY, 0);
 	if (IS_ERR(fp)) {
-		pr_err("open %s error.\n", path);
+		pr_err("open %s error: %ld.\n", path, PTR_ERR(fp));
 		return false;
 	}
 

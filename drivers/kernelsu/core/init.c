@@ -130,6 +130,7 @@ int __init kernelsu_init(void)
 		ksu_file_wrapper_init();
 
 		ksu_boot_completed = true;
+		ksu_throne_tracker_set_scan_cred(current_cred());
 		track_throne(false);
 
 		if (!getenforce()) {

@@ -260,6 +260,20 @@ struct ksu_throne_work_data {
 
 static struct ksu_throne_work_data throne_data;
 static DEFINE_MUTEX(throne_tracker_mutex);
+/*
+ * ksu_cred is created before Android unlocks encrypted /data and therefore
+ * does not carry the keyrings needed to open /data/app APKs.  Keep a pinned
+ * copy of the credentials from the post-boot ksud process for all later
+ * tracker scans.
+ */
+static const struct cred *throne_scan_cred;
+
+static const struct cred *throne_tracker_cred(void)
+{
+	const struct cred *cred = READ_ONCE(throne_scan_cred);
+
+	return cred ? cred : ksu_cred;
+}
 
 static bool do_track_throne_core(bool prune_only)
 {
@@ -368,8 +382,8 @@ static void ksu_throne_work_fn(struct work_struct *work)
 
 	mutex_lock(&throne_tracker_mutex);
 
-	// Temporarily lend root credentials to the kworker
-	const struct cred *saved_cred = override_creds(ksu_cred);
+	// Use post-boot credentials so fscrypt can resolve /data/app keys.
+	const struct cred *saved_cred = override_creds(throne_tracker_cred());
 
 	success = do_track_throne_core(data->prune_only);
 
@@ -397,7 +411,7 @@ void track_throne(bool prune_only)
 	if (unlikely(throne_tracker_first_run)) {
 		mutex_lock(&throne_tracker_mutex);
 
-		const struct cred *saved_cred = override_creds(ksu_cred);
+		const struct cred *saved_cred = override_creds(throne_tracker_cred());
 		do_track_throne_core(prune_only);
 		revert_creds(saved_cred);
 
@@ -416,6 +430,33 @@ void track_throne(bool prune_only)
 	schedule_delayed_work(&throne_data.dwork, 0);
 }
 
+void ksu_throne_tracker_set_scan_cred(const struct cred *cred)
+{
+	if (!cred)
+		return;
+
+	mutex_lock(&throne_tracker_mutex);
+	if (!throne_scan_cred)
+		throne_scan_cred = get_cred(cred);
+	mutex_unlock(&throne_tracker_mutex);
+}
+
+bool track_throne_sync(bool prune_only)
+{
+	bool success;
+	const struct cred *saved_cred;
+
+	/* Do not let a queued prune/search race this post-boot scan. */
+	cancel_delayed_work_sync(&throne_data.dwork);
+	mutex_lock(&throne_tracker_mutex);
+	saved_cred = override_creds(throne_tracker_cred());
+	success = do_track_throne_core(prune_only);
+	revert_creds(saved_cred);
+	mutex_unlock(&throne_tracker_mutex);
+
+	return success;
+}
+
 void __init ksu_throne_tracker_init(void)
 {
 	INIT_DELAYED_WORK(&throne_data.dwork, ksu_throne_work_fn);
@@ -423,5 +464,15 @@ void __init ksu_throne_tracker_init(void)
 
 void __exit ksu_throne_tracker_exit(void)
 {
+	const struct cred *scan_cred;
+
 	cancel_delayed_work_sync(&throne_data.dwork);
+
+	mutex_lock(&throne_tracker_mutex);
+	scan_cred = throne_scan_cred;
+	throne_scan_cred = NULL;
+	mutex_unlock(&throne_tracker_mutex);
+
+	if (scan_cred)
+		put_cred(scan_cred);
 }

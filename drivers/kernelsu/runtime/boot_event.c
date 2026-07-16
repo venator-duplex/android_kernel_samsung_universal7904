@@ -67,9 +67,15 @@ void on_boot_completed(void)
 {
     ksu_boot_completed = true;
     pr_info("on_boot_completed!\n");
+    /*
+     * The built-in driver creates ksu_cred before FBE unlocks /data.  The
+     * ksud process reaching this event already has the data keyrings, so
+     * retain its credentials for manager APK scans and identify immediately.
+     */
+    ksu_throne_tracker_set_scan_cred(current_cred());
     track_throne(true);
-    // Re-detect the signed manager after boot. The packages.list rename that
-    // normally crowns it can happen before ksu_boot_completed and be ignored.
-    track_throne(false);
+    // Re-detect synchronously; packages.list may have been renamed before
+    // ksu_boot_completed and the old early-boot credentials cannot open APKs.
+    track_throne_sync(false);
     ksu_avc_spoof_late_init();
 }
