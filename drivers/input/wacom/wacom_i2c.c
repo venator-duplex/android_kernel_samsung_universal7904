@@ -29,6 +29,9 @@
 #include <linux/of_gpio.h>
 #include <linux/sec_sysfs.h>
 #include <linux/usb/manager/usb_typec_manager_notifier.h>
+#ifdef CONFIG_FB
+#include <linux/fb.h>
+#endif
 
 #include "wacom.h"
 
@@ -1632,9 +1635,19 @@ static irqreturn_t wacom_interrupt(int irq, void *dev_id)
 					wac_i2c->survey_pos.id = EPEN_POS_ID_SCREEN_OF_MEMO;
 					wac_i2c->survey_pos.x = x;
 					wac_i2c->survey_pos.y = y;
+				} else if (wac_i2c->function_set & EPEN_SETMODE_AOP_OPTION_AOT) {
+					input_info(true, &wac_i2c->client->dev,
+						   "S Pen side button wake detected\n");
+
+					input_report_key(wac_i2c->input_dev,
+							 KEY_WAKEUP_UNLOCK, 1);
+					input_sync(wac_i2c->input_dev);
+					input_report_key(wac_i2c->input_dev,
+							 KEY_WAKEUP_UNLOCK, 0);
+					input_sync(wac_i2c->input_dev);
 				} else {
 					input_info(true, &wac_i2c->client->dev,
-						   "AOP detected but skip report, screen_off_memo disabled\n");
+						   "AOP side button detected but wake options disabled\n");
 				}
 			} else if (data[10] == AOP_DOUBLE_TAB) {
 				if (wac_i2c->function_set & EPEN_SETMODE_AOP_OPTION_AOD) {
@@ -1863,6 +1876,35 @@ static void wacom_i2c_input_close(struct input_dev *dev)
 
 	wacom_sleep_sequence(wac_i2c);
 }
+
+#ifdef CONFIG_FB
+static int wacom_fb_notifier_cb(struct notifier_block *nb,
+				unsigned long event, void *data)
+{
+	struct wacom_i2c *wac_i2c =
+		container_of(nb, struct wacom_i2c, fb_notifier);
+	struct fb_event *evdata = data;
+	int *blank;
+
+	if (!evdata || !evdata->data)
+		return NOTIFY_DONE;
+
+	blank = evdata->data;
+	if (event == FB_EARLY_EVENT_BLANK &&
+	    *blank == FB_BLANK_POWERDOWN) {
+		input_info(true, &wac_i2c->client->dev,
+			   "%s: display powerdown\n", __func__);
+		wacom_sleep_sequence(wac_i2c);
+	} else if (event == FB_EVENT_BLANK &&
+		   *blank == FB_BLANK_UNBLANK) {
+		input_info(true, &wac_i2c->client->dev,
+			   "%s: display unblank\n", __func__);
+		wacom_wakeup_sequence(wac_i2c);
+	}
+
+	return NOTIFY_OK;
+}
+#endif
 
 static void wacom_i2c_set_input_values(struct wacom_i2c *wac_i2c,
 				       struct input_dev *input_dev, u8 propbit)
@@ -2983,6 +3025,17 @@ static int wacom_i2c_probe(struct i2c_client *client,
 
 	device_init_wakeup(&client->dev, true);
 
+#ifdef CONFIG_FB
+	wac_i2c->fb_notifier.notifier_call = wacom_fb_notifier_cb;
+	ret = fb_register_client(&wac_i2c->fb_notifier);
+	if (ret) {
+		input_err(true, &client->dev,
+			  "failed to register fb notifier: %d\n", ret);
+	} else {
+		wac_i2c->fb_notifier_registered = true;
+	}
+#endif
+
 	if (wac_i2c->pdata->table_swap) {
 		INIT_DELAYED_WORK(&wac_i2c->usb_typec_work, wacom_usb_typec_work);
 		INIT_DELAYED_WORK(&wac_i2c->typec_nb_reg_work,
@@ -3068,6 +3121,11 @@ static int wacom_i2c_remove(struct i2c_client *client)
 	input_info(true, &wac_i2c->client->dev, "%s called!\n", __func__);
 
 	device_init_wakeup(&client->dev, false);
+
+#ifdef CONFIG_FB
+	if (wac_i2c->fb_notifier_registered)
+		fb_unregister_client(&wac_i2c->fb_notifier);
+#endif
 
 	wacom_enable_irq(wac_i2c, false);
 	wacom_enable_pdct_irq(wac_i2c, false);

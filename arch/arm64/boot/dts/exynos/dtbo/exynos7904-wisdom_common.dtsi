@@ -1380,6 +1380,7 @@ usi_mode = "hsi2c0" or "hsi2c1" or "spi" or "uart"
 		wacom,ic_type = <9019>;
 		wacom,use_virtual_softkey;
 		wacom,support_aop_mode = "1"; /* S-note want to check to use aop */
+		wacom,support_aot_mode;
 		/*wacom,support_dex_mode;*/
 	};
 };

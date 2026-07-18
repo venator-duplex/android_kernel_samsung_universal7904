@@ -3,6 +3,9 @@
 
 #include <linux/wakelock.h>
 #include <linux/sec_sysfs.h>
+#ifdef CONFIG_FB
+#include <linux/fb.h>
+#endif
 
 
 #include "wacom_i2c.h"
@@ -276,6 +279,10 @@ struct wacom_i2c {
 	int  min_adc_val;
 	bool battery_saving_mode;
 	bool screen_on;
+#ifdef CONFIG_FB
+	struct notifier_block fb_notifier;
+	bool fb_notifier_registered;
+#endif
 	bool power_enable;
 	struct completion resume_done;
 	struct wake_lock wakelock;
