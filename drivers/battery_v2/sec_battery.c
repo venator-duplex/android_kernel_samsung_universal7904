@@ -200,7 +200,6 @@ static enum power_supply_property sec_battery_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_AVG,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CURRENT_AVG,
-	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CHARGE_NOW,
@@ -241,46 +240,6 @@ static enum power_supply_property sec_ps_props[] = {
 static char *supply_list[] = {
 	"battery",
 };
-
-static int sec_bat_get_charge_full(struct sec_battery_info *battery)
-{
-	union power_supply_propval value = {0, };
-	int capacity_max;
-
-#if defined(CONFIG_FG_FULLCAP_FROM_BATTERY)
-	struct capacity_measure_info *info = &battery->capacity_info;
-	s64 measured_uah;
-	int design_uah = battery->pdata->battery_full_capacity * 1000;
-
-	/*
-	 * capacity_max is the upper end of the fuel gauge's SOC scaling range,
-	 * not a learned battery capacity.  Only report CHARGE_FULL after the
-	 * software coulomb counter has completed a qualifying charge cycle.
-	 */
-	if (info->capacity_full > 0) {
-		/* capacity_full is accumulated in mA seconds. */
-		measured_uah = div_s64((s64)info->capacity_full * 1000, 3600);
-		if (measured_uah > 0 && measured_uah <= (s64)design_uah * 12 / 10)
-			return (int)measured_uah;
-	}
-#endif
-
-	/*
-	 * Before the first qualifying charge cycle, the software measurement is
-	 * empty. Keep the existing fuel-gauge capacity_max as a usable fallback
-	 * so Settings does not show an empty maximum-capacity field.
-	 */
-	psy_do_property(battery->pdata->fuelgauge_name, get,
-			POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN, value);
-
-	capacity_max = value.intval;
-	if (capacity_max <= 0)
-		capacity_max = 1000;
-	else if (capacity_max > 1000)
-		capacity_max = 1000;
-
-	return battery->pdata->battery_full_capacity * capacity_max;
-}
 
 char *sec_cable_type[SEC_BATTERY_CABLE_MAX] = {
 	"UNKNOWN",		/* 0 */
@@ -7352,9 +7311,6 @@ static int sec_bat_get_property(struct power_supply *psy,
 		psy_do_property(battery->pdata->fuelgauge_name, get,
 				POWER_SUPPLY_PROP_CHARGE_COUNTER, value);
 		val->intval = value.intval;
-		break;
-	case POWER_SUPPLY_PROP_CHARGE_FULL:
-		val->intval = sec_bat_get_charge_full(battery);
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 		val->intval = battery->pdata->battery_full_capacity * 1000;
