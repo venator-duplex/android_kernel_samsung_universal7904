@@ -118,7 +118,7 @@
  * the only thing eating into inactive list space is active pages.
  *
  *
- *		Activating refaulting pages
+ *		Refaulting inactive pages
  *
  * All that is known about the active list is that the pages have been
  * accessed more than once in the past.  This means that at any given
@@ -131,12 +131,24 @@
  * used less frequently than the refaulting page - or even not used at
  * all anymore.
  *
+ * That means if inactive cache is refaulting with a suitable refault
+ * distance, we assume the cache workingset is transitioning and put
+ * pressure on the current active list.
+ *
  * If this is wrong and demotion kicks in, the pages which are truly
  * used more frequently will be reactivated while the less frequently
  * used once will be evicted from memory.
  *
  * But if this is right, the stale pages will be pushed out of memory
  * and the used pages get to stay in cache.
+ *
+ *		Refaulting active pages
+ *
+ * If on the other hand the refaulting pages have recently been
+ * deactivated, it means that the active list is no longer protecting
+ * actively used cache from reclaim. The cache is NOT transitioning to
+ * a different workingset; the existing workingset is thrashing in the
+ * space allocated to the page cache.
  *
  *
  *		Implementation
@@ -152,10 +164,12 @@
  * refault distance will immediately activate the refaulting page.
  */
 
-static void *pack_shadow(unsigned long eviction, struct zone *zone)
+static void *pack_shadow(unsigned long eviction, struct zone *zone,
+			 bool workingset)
 {
 	eviction = (eviction << NODES_SHIFT) | zone_to_nid(zone);
 	eviction = (eviction << ZONES_SHIFT) | zone_idx(zone);
+	eviction = (eviction << 1) | workingset;
 	eviction = (eviction << RADIX_TREE_EXCEPTIONAL_SHIFT);
 
 	return (void *)(eviction | RADIX_TREE_EXCEPTIONAL_ENTRY);
@@ -163,7 +177,8 @@ static void *pack_shadow(unsigned long eviction, struct zone *zone)
 
 static void unpack_shadow(void *shadow,
 			  struct zone **zone,
-			  unsigned long *distance)
+			  unsigned long *distance,
+			  bool *workingset)
 {
 	unsigned long entry = (unsigned long)shadow;
 	unsigned long eviction;
@@ -172,6 +187,8 @@ static void unpack_shadow(void *shadow,
 	int zid, nid;
 
 	entry >>= RADIX_TREE_EXCEPTIONAL_SHIFT;
+	*workingset = entry & 1;
+	entry >>= 1;
 	zid = entry & ((1UL << ZONES_SHIFT) - 1);
 	entry >>= ZONES_SHIFT;
 	nid = entry & ((1UL << NODES_SHIFT) - 1);
@@ -181,7 +198,7 @@ static void unpack_shadow(void *shadow,
 	*zone = NODE_DATA(nid)->node_zones + zid;
 
 	refault = atomic_long_read(&(*zone)->inactive_age);
-	mask = ~0UL >> (NODES_SHIFT + ZONES_SHIFT +
+	mask = ~0UL >> (1 + NODES_SHIFT + ZONES_SHIFT +
 			RADIX_TREE_EXCEPTIONAL_SHIFT);
 	/*
 	 * The unsigned subtraction here gives an accurate distance
@@ -216,31 +233,38 @@ void *workingset_eviction(struct address_space *mapping, struct page *page)
 	unsigned long eviction;
 
 	eviction = atomic_long_inc_return(&zone->inactive_age);
-	return pack_shadow(eviction, zone);
+	return pack_shadow(eviction, zone, PageWorkingset(page));
 }
 
 /**
  * workingset_refault - evaluate the refault of a previously evicted page
+ * @page: the freshly allocated replacement page
  * @shadow: shadow entry of the evicted page
  *
  * Calculates and evaluates the refault distance of the previously
  * evicted page in the context of the zone it was allocated in.
  *
- * Returns %true if the page should be activated, %false otherwise.
  */
-bool workingset_refault(void *shadow)
+void workingset_refault(struct page *page, void *shadow)
 {
 	unsigned long refault_distance;
 	struct zone *zone;
+	bool workingset;
 
-	unpack_shadow(shadow, &zone, &refault_distance);
+	unpack_shadow(shadow, &zone, &refault_distance, &workingset);
 	inc_zone_state(zone, WORKINGSET_REFAULT);
 
-	if (refault_distance <= zone_page_state(zone, NR_ACTIVE_FILE)) {
-		inc_zone_state(zone, WORKINGSET_ACTIVATE);
-		return true;
+	if (refault_distance > zone_page_state(zone, NR_ACTIVE_FILE))
+		return;
+
+	SetPageActive(page);
+	atomic_long_inc(&zone->inactive_age);
+	inc_zone_state(zone, WORKINGSET_ACTIVATE);
+
+	if (workingset) {
+		SetPageWorkingset(page);
+		inc_zone_state(zone, WORKINGSET_RESTORE);
 	}
-	return false;
 }
 
 /**

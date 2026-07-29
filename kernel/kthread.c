@@ -553,10 +553,11 @@ void __init_kthread_worker(struct kthread_worker *worker,
 				const char *name,
 				struct lock_class_key *key)
 {
+	memset(worker, 0, sizeof(*worker));
 	spin_lock_init(&worker->lock);
 	lockdep_set_class_and_name(&worker->lock, key, name);
 	INIT_LIST_HEAD(&worker->work_list);
-	worker->task = NULL;
+	INIT_LIST_HEAD(&worker->delayed_work_list);
 }
 EXPORT_SYMBOL_GPL(__init_kthread_worker);
 
@@ -580,7 +581,7 @@ int kthread_worker_fn(void *worker_ptr)
 	struct kthread_worker *worker = worker_ptr;
 	struct kthread_work *work;
 
-	WARN_ON(worker->task);
+	WARN_ON(worker->task && worker->task != current);
 	worker->task = current;
 repeat:
 	set_current_state(TASK_INTERRUPTIBLE);	/* mb paired w/ kthread_stop */
@@ -613,6 +614,37 @@ repeat:
 	goto repeat;
 }
 EXPORT_SYMBOL_GPL(kthread_worker_fn);
+
+struct kthread_worker *
+kthread_create_worker(unsigned int flags, const char namefmt[], ...)
+{
+	struct kthread_worker *worker;
+	struct task_struct *task;
+	char name[TASK_COMM_LEN];
+	va_list args;
+
+	worker = kzalloc(sizeof(*worker), GFP_KERNEL);
+	if (!worker)
+		return ERR_PTR(-ENOMEM);
+
+	init_kthread_worker(worker);
+
+	va_start(args, namefmt);
+	vsnprintf(name, sizeof(name), namefmt, args);
+	va_end(args);
+
+	task = kthread_create(kthread_worker_fn, worker, "%s", name);
+	if (IS_ERR(task)) {
+		kfree(worker);
+		return ERR_CAST(task);
+	}
+
+	worker->flags = flags;
+	worker->task = task;
+	wake_up_process(task);
+	return worker;
+}
+EXPORT_SYMBOL(kthread_create_worker);
 
 /*
  * Returns true when the work could not be queued at the moment.
@@ -664,6 +696,66 @@ bool queue_kthread_work(struct kthread_worker *worker,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(queue_kthread_work);
+
+void kthread_delayed_work_timer_fn(unsigned long data)
+{
+	struct kthread_delayed_work *dwork =
+		(struct kthread_delayed_work *)data;
+	struct kthread_work *work = &dwork->work;
+	struct kthread_worker *worker = work->worker;
+
+	if (WARN_ON_ONCE(!worker))
+		return;
+
+	spin_lock(&worker->lock);
+	WARN_ON_ONCE(work->worker != worker);
+	WARN_ON_ONCE(list_empty(&work->node));
+	list_del_init(&work->node);
+	if (!work->canceling)
+		insert_kthread_work(worker, work, &worker->work_list);
+	spin_unlock(&worker->lock);
+}
+EXPORT_SYMBOL(kthread_delayed_work_timer_fn);
+
+static void __kthread_queue_delayed_work(struct kthread_worker *worker,
+					 struct kthread_delayed_work *dwork,
+					 unsigned long delay)
+{
+	struct timer_list *timer = &dwork->timer;
+	struct kthread_work *work = &dwork->work;
+
+	WARN_ON_ONCE(timer->function != kthread_delayed_work_timer_fn ||
+		     timer->data != (unsigned long)dwork);
+
+	if (!delay) {
+		insert_kthread_work(worker, work, &worker->work_list);
+		return;
+	}
+
+	list_add(&work->node, &worker->delayed_work_list);
+	work->worker = worker;
+	timer_stats_timer_set_start_info(timer);
+	timer->expires = jiffies + delay;
+	add_timer(timer);
+}
+
+bool kthread_queue_delayed_work(struct kthread_worker *worker,
+				struct kthread_delayed_work *dwork,
+				unsigned long delay)
+{
+	struct kthread_work *work = &dwork->work;
+	unsigned long flags;
+	bool ret = false;
+
+	spin_lock_irqsave(&worker->lock, flags);
+	if (!queuing_blocked(worker, work)) {
+		__kthread_queue_delayed_work(worker, dwork, delay);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&worker->lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(kthread_queue_delayed_work);
 
 struct kthread_flush_work {
 	struct kthread_work	work;
@@ -742,7 +834,22 @@ static bool __kthread_cancel_work(struct kthread_work *work,
 	return false;
 }
 
-static bool __kthread_cancel_work_sync(struct kthread_work *work)
+static void kthread_cancel_delayed_work_timer(struct kthread_work *work,
+					      unsigned long *flags)
+{
+	struct kthread_delayed_work *dwork =
+		container_of(work, struct kthread_delayed_work, work);
+	struct kthread_worker *worker = work->worker;
+
+	work->canceling++;
+	spin_unlock_irqrestore(&worker->lock, *flags);
+	del_timer_sync(&dwork->timer);
+	spin_lock_irqsave(&worker->lock, *flags);
+	work->canceling--;
+}
+
+static bool __kthread_cancel_work_sync(struct kthread_work *work,
+				       bool is_dwork)
 {
 	struct kthread_worker *worker = work->worker;
 	unsigned long flags;
@@ -754,6 +861,9 @@ static bool __kthread_cancel_work_sync(struct kthread_work *work)
 	spin_lock_irqsave(&worker->lock, flags);
 	/* Work must not be used with >1 worker, see kthread_queue_work(). */
 	WARN_ON_ONCE(work->worker != worker);
+
+	if (is_dwork)
+		kthread_cancel_delayed_work_timer(work, &flags);
 
 	ret = __kthread_cancel_work(work, &flags);
 
@@ -794,9 +904,15 @@ out:
  */
 bool kthread_cancel_work_sync(struct kthread_work *work)
 {
-	return __kthread_cancel_work_sync(work);
+	return __kthread_cancel_work_sync(work, false);
 }
 EXPORT_SYMBOL_GPL(kthread_cancel_work_sync);
+
+bool kthread_cancel_delayed_work_sync(struct kthread_delayed_work *dwork)
+{
+	return __kthread_cancel_work_sync(&dwork->work, true);
+}
+EXPORT_SYMBOL_GPL(kthread_cancel_delayed_work_sync);
 
 /**
  * flush_kthread_worker - flush all current works on a kthread_worker
@@ -816,3 +932,19 @@ void flush_kthread_worker(struct kthread_worker *worker)
 	wait_for_completion(&fwork.done);
 }
 EXPORT_SYMBOL_GPL(flush_kthread_worker);
+
+void kthread_destroy_worker(struct kthread_worker *worker)
+{
+	struct task_struct *task;
+
+	task = worker->task;
+	if (WARN_ON(!task))
+		return;
+
+	flush_kthread_worker(worker);
+	kthread_stop(task);
+	WARN_ON(!list_empty(&worker->work_list));
+	WARN_ON(!list_empty(&worker->delayed_work_list));
+	kfree(worker);
+}
+EXPORT_SYMBOL(kthread_destroy_worker);

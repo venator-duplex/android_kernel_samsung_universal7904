@@ -59,7 +59,6 @@ struct sched_param {
 #include <linux/uidgid.h>
 #include <linux/gfp.h>
 #include <linux/magic.h>
-#include <linux/cgroup-defs.h>
 
 #include <asm/processor.h>
 
@@ -159,6 +158,12 @@ extern void get_avenrun(unsigned long *loads, unsigned long offset, int shift);
 #define EXP_1		1884		/* 1/exp(5sec/1min) as fixed-point */
 #define EXP_5		2014		/* 1/exp(5sec/5min) */
 #define EXP_15		2037		/* 1/exp(5sec/15min) */
+
+#define LOAD_INT(x) ((x) >> FSHIFT)
+#define LOAD_FRAC(x) LOAD_INT(((x) & (FIXED_1 - 1)) * 100)
+
+extern unsigned long calc_load_n(unsigned long load, unsigned long exp,
+				 unsigned long active, unsigned int n);
 
 #define CALC_LOAD(load,exp,n) \
 	load *= exp; \
@@ -1682,6 +1687,9 @@ struct task_struct {
 	unsigned sched_reset_on_fork:1;
 	unsigned sched_contributes_to_load:1;
 	unsigned sched_migrated:1;
+#ifdef CONFIG_PSI
+	unsigned sched_psi_wake_requeue:1;
+#endif
 	unsigned :0; /* force alignment to the next boundary */
 
 	/* unserialized, strictly 'current' */
@@ -1885,6 +1893,10 @@ struct task_struct {
 	unsigned long ptrace_message;
 	siginfo_t *last_siginfo; /* For ptrace use.  */
 	struct task_io_accounting ioac;
+#ifdef CONFIG_PSI
+	/* Pressure stall state */
+	unsigned int			psi_flags;
+#endif
 #if defined(CONFIG_TASK_XACCT)
 	u64 acct_rss_mem1;	/* accumulated rss usage */
 	u64 acct_vm_mem1;	/* accumulated virtual memory usage */
@@ -2336,6 +2348,7 @@ extern void thread_group_cputime_adjusted(struct task_struct *p, cputime_t *ut, 
 #define PF_KTHREAD	0x00200000	/* I am a kernel thread */
 #define PF_RANDOMIZE	0x00400000	/* randomize virtual address space */
 #define PF_SWAPWRITE	0x00800000	/* Allowed to write to swap */
+#define PF_MEMSTALL	0x01000000	/* Stalled due to lack of memory */
 #define PF_NO_SETAFFINITY 0x04000000	/* Userland is not allowed to meddle with cpus_allowed */
 #define PF_MCE_EARLY    0x08000000      /* Early kill for mce process policy */
 #define PF_MUTEX_TESTER	0x20000000	/* Thread belongs to the rt mutex tester */
@@ -3065,11 +3078,7 @@ static inline void unlock_task_sighand(struct task_struct *tsk,
  * subsystems needing threadgroup stability can hook into for
  * synchronization.
  */
-static inline void threadgroup_change_begin(struct task_struct *tsk)
-{
-	might_sleep();
-	cgroup_threadgroup_change_begin(tsk);
-}
+extern void threadgroup_change_begin(struct task_struct *tsk);
 
 /**
  * threadgroup_change_end - mark the end of changes to a threadgroup
@@ -3077,10 +3086,7 @@ static inline void threadgroup_change_begin(struct task_struct *tsk)
  *
  * See threadgroup_change_begin().
  */
-static inline void threadgroup_change_end(struct task_struct *tsk)
-{
-	cgroup_threadgroup_change_end(tsk);
-}
+extern void threadgroup_change_end(struct task_struct *tsk);
 
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 

@@ -34,6 +34,7 @@
 #include <linux/memcontrol.h>
 #include <linux/cleancache.h>
 #include <linux/rmap.h>
+#include <linux/psi.h>
 #include "internal.h"
 
 #define CREATE_TRACE_POINTS
@@ -699,11 +700,9 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 		 * recently, in which case it should be activated like
 		 * any other repeatedly accessed page.
 		 */
-		if (shadow && workingset_refault(shadow)) {
-			SetPageActive(page);
-			workingset_activation(page);
-		} else
-			ClearPageActive(page);
+		WARN_ON_ONCE(PageActive(page));
+		if (shadow)
+			workingset_refault(page, shadow);
 		lru_cache_add(page);
 	}
 	return ret;
@@ -749,37 +748,68 @@ wait_queue_head_t *page_waitqueue(struct page *page)
 }
 EXPORT_SYMBOL(page_waitqueue);
 
+static bool psi_page_refault_enter(struct page *page, int bit_nr,
+				   unsigned long *flags)
+{
+	if (bit_nr != PG_locked || PageUptodate(page) ||
+	    !PageWorkingset(page))
+		return false;
+
+	psi_memstall_enter(flags);
+	return true;
+}
+
 void wait_on_page_bit(struct page *page, int bit_nr)
 {
 	DEFINE_WAIT_BIT(wait, &page->flags, bit_nr);
+	unsigned long pflags;
+	bool thrashing;
 
-	if (test_bit(bit_nr, &page->flags))
+	if (test_bit(bit_nr, &page->flags)) {
+		thrashing = psi_page_refault_enter(page, bit_nr, &pflags);
 		__wait_on_bit(page_waitqueue(page), &wait, bit_wait_io,
 							TASK_UNINTERRUPTIBLE);
+		if (thrashing)
+			psi_memstall_leave(&pflags);
+	}
 }
 EXPORT_SYMBOL(wait_on_page_bit);
 
 int wait_on_page_bit_killable(struct page *page, int bit_nr)
 {
 	DEFINE_WAIT_BIT(wait, &page->flags, bit_nr);
+	unsigned long pflags;
+	bool thrashing;
+	int ret;
 
 	if (!test_bit(bit_nr, &page->flags))
 		return 0;
 
-	return __wait_on_bit(page_waitqueue(page), &wait,
-			     bit_wait_io, TASK_KILLABLE);
+	thrashing = psi_page_refault_enter(page, bit_nr, &pflags);
+	ret = __wait_on_bit(page_waitqueue(page), &wait,
+			    bit_wait_io, TASK_KILLABLE);
+	if (thrashing)
+		psi_memstall_leave(&pflags);
+	return ret;
 }
 
 int wait_on_page_bit_killable_timeout(struct page *page,
 				       int bit_nr, unsigned long timeout)
 {
 	DEFINE_WAIT_BIT(wait, &page->flags, bit_nr);
+	unsigned long pflags;
+	bool thrashing;
+	int ret;
 
 	wait.key.timeout = jiffies + timeout;
 	if (!test_bit(bit_nr, &page->flags))
 		return 0;
-	return __wait_on_bit(page_waitqueue(page), &wait,
-			     bit_wait_io_timeout, TASK_KILLABLE);
+	thrashing = psi_page_refault_enter(page, bit_nr, &pflags);
+	ret = __wait_on_bit(page_waitqueue(page), &wait,
+			    bit_wait_io_timeout, TASK_KILLABLE);
+	if (thrashing)
+		psi_memstall_leave(&pflags);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(wait_on_page_bit_killable_timeout);
 
@@ -883,18 +913,30 @@ EXPORT_SYMBOL_GPL(page_endio);
 void __lock_page(struct page *page)
 {
 	DEFINE_WAIT_BIT(wait, &page->flags, PG_locked);
+	unsigned long pflags;
+	bool thrashing;
 
+	thrashing = psi_page_refault_enter(page, PG_locked, &pflags);
 	__wait_on_bit_lock(page_waitqueue(page), &wait, bit_wait_io,
 							TASK_UNINTERRUPTIBLE);
+	if (thrashing)
+		psi_memstall_leave(&pflags);
 }
 EXPORT_SYMBOL(__lock_page);
 
 int __lock_page_killable(struct page *page)
 {
 	DEFINE_WAIT_BIT(wait, &page->flags, PG_locked);
+	unsigned long pflags;
+	bool thrashing;
+	int ret;
 
-	return __wait_on_bit_lock(page_waitqueue(page), &wait,
-					bit_wait_io, TASK_KILLABLE);
+	thrashing = psi_page_refault_enter(page, PG_locked, &pflags);
+	ret = __wait_on_bit_lock(page_waitqueue(page), &wait,
+				 bit_wait_io, TASK_KILLABLE);
+	if (thrashing)
+		psi_memstall_leave(&pflags);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(__lock_page_killable);
 
