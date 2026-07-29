@@ -881,6 +881,35 @@ static int s2mu004_if_com_to_usb(void *mdata)
 	return ret;
 }
 
+/*
+ * The non-waterproof (CCIC-managed) build uses this v2 driver, but it used
+ * to leave the MUIC audio callback unset.  muic_core therefore rejected
+ * desk-dock/audio-dock routing before the switch was ever programmed.
+ * Preserve the JIG/VBUS bits while selecting the audio DM/DP path, matching
+ * the legacy driver's MANSW_AUDIO behaviour.
+ */
+static int s2mu004_if_com_to_audio(void *mdata)
+{
+	struct s2mu004_muic_data *muic_data = (struct s2mu004_muic_data *)mdata;
+	u8 reg_val;
+	int ret;
+
+	mutex_lock(&muic_data->switch_mutex);
+
+	reg_val = s2mu004_i2c_read_byte(muic_data->i2c,
+			S2MU004_REG_MUIC_SW_CTRL);
+	reg_val &= ~MANUAL_SW_DM_DP_MASK;
+	reg_val |= MANSW_AUDIO & MANUAL_SW_DM_DP_MASK;
+	ret = _s2mu004_i2c_guaranteed_wbyte(muic_data->i2c,
+			S2MU004_REG_MUIC_SW_CTRL, reg_val);
+	if (ret)
+		pr_err("%s set_com_audio err(%d)\n", __func__, ret);
+
+	mutex_unlock(&muic_data->switch_mutex);
+
+	return ret;
+}
+
 static int s2mu004_if_com_to_uart(void *mdata)
 {
 	struct s2mu004_muic_data *muic_data = (struct s2mu004_muic_data *)mdata;
@@ -2894,6 +2923,7 @@ static void s2mu004_muic_init_interface(struct s2mu004_muic_data *muic_data,
 	muic_if->muic_data = (void *)muic_data;
 
 	muic_if->set_com_to_open = s2mu004_if_com_to_open;
+	muic_if->set_com_to_audio = s2mu004_if_com_to_audio;
 	muic_if->set_switch_to_usb = s2mu004_if_com_to_usb;
 	muic_if->set_com_to_otg = s2mu004_if_com_to_usb;
 	muic_if->set_switch_to_uart = s2mu004_if_com_to_uart;
@@ -3268,4 +3298,3 @@ module_exit(s2mu004_muic_exit);
 
 MODULE_DESCRIPTION("Samsung S2MU004 Micro USB IC driver");
 MODULE_LICENSE("GPL");
-
