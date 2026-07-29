@@ -302,6 +302,13 @@ static int s5p_mfc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 	}
 
 	s5p_mfc_try_run(dev);
+	/*
+	 * try_run() may return while another context owns the MFC.  Keep a
+	 * pending encoder context visible to the butler so a QBUF/stream-on race
+	 * cannot leave the first keyframe waiting for a future buffer event.
+	 */
+	if (s5p_mfc_is_work_to_do(dev))
+		queue_work(dev->butler_wq, &dev->butler_work);
 
 	return 0;
 }
@@ -407,6 +414,8 @@ static void s5p_mfc_enc_buf_queue(struct vb2_buffer *vb)
 		s5p_mfc_set_bit(ctx->num, &dev->work_bits);
 	}
 	s5p_mfc_try_run(dev);
+	if (s5p_mfc_is_work_to_do(dev))
+		queue_work(dev->butler_wq, &dev->butler_work);
 
 	mfc_debug_leave();
 }
