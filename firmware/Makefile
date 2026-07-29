@@ -231,10 +231,7 @@ quiet_cmd_fwbin = MK_FW   $@
       cmd_fwbin = FWNAME="$(patsubst firmware/%.gen.S,%,$@)";		     \
 		  FWSTR="$(subst /,_,$(subst .,_,$(subst -,_,$(patsubst	     \
 				firmware/%.gen.S,%,$@))))";		     \
-		  FWPATH="$(objtree)/$(2)";			     \
-		  if [ ! -f "$$FWPATH" ]; then			     \
-			  FWPATH="$(srctree)/$(2)";		     \
-		  fi;							     \
+		  FWPATH="$(2)";					     \
 		  ASM_WORD=$(if $(CONFIG_64BIT),.quad,.long);		     \
 		  ASM_ALIGN=$(if $(CONFIG_64BIT),3,2);			     \
 		  PROGBITS=$(if $(CONFIG_ARM),%,@)progbits;		     \
@@ -263,8 +260,9 @@ wordsize_deps := $(wildcard include/config/64bit.h include/config/32bit.h \
 		include/config/x86_32.h include/config/x86_64.h \
 		$(srctree)/firmware/Makefile)
 
-$(patsubst %,$(obj)/%.gen.S, $(fw-shipped-y)): %: $(wordsize_deps)
-	$(call cmd,fwbin,$(patsubst %.gen.S,%,$@))
+$(patsubst %,$(obj)/%.gen.S, $(fw-shipped-y)): $(obj)/%.gen.S: \
+		$(obj)/% $(wordsize_deps)
+	$(call cmd,fwbin,$(abspath $<))
 $(patsubst %,$(obj)/%.gen.S, $(fw-external-y)): %: $(wordsize_deps) \
 		include/config/extra/firmware/dir.h
 	$(call cmd,fwbin,$(fwabs)/$(patsubst $(obj)/%.gen.S,%,$@))
