@@ -5466,7 +5466,6 @@ int __init workqueue_init(void)
 		BUG_ON(!create_worker(pool));
 
 	wq_online = true;
-	wq_watchdog_init();
 
 	return 0;
 }

@@ -955,6 +955,11 @@ static inline void sched_ttwu_pending(void) { }
 
 #endif /* CONFIG_SMP */
 
+static inline struct rq *__task_rq_lock(struct task_struct *p)
+	__acquires(rq->lock);
+static inline void __task_rq_unlock(struct rq *rq)
+	__releases(rq->lock);
+
 #include "stats.h"
 #include "auto_group.h"
 
