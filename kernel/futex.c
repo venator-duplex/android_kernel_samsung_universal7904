@@ -2214,7 +2214,7 @@ retry_private:
 			 */
 			if (unlikely(pi_state->owner == this->task)) {
 				this->pi_state = NULL;
-				free_pi_state(pi_state);
+				put_pi_state(pi_state);
 				ret = -EDEADLK;
 				goto out_unlock;
 			}
