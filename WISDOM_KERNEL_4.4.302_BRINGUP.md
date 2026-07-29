@@ -91,9 +91,15 @@ TARGET_KERNEL_ADDITIONAL_FLAGS += LD=ld.lld AR=llvm-ar ...
 TARGET_KERNEL_ADDITIONAL_FLAGS := HOSTCFLAGS="..."
 ```
 
-第二行的 `:=` 会覆盖第一行。第一阶段继续使用已知可工作的独立 GCC 4.9 构建，
-不同时切换 ROM 内源码构建、Clang 或 LTO。以后如果切换到 ROM 内编译，需要单独
-修正该赋值。
+第二行的 `:=` 会覆盖第一行。4.4.302 的
+`include/linux/compiler-gcc.h` 明确要求 GCC 5.1 及以上，直接沿用 Android
+GCC 4.9 会在编译入口处失败，因此不能通过删除版本检查来硬绕过。第一阶段实际
+验证通过的组合是 LineageOS kernel Clang r416183b（Clang 12.0.5）加 Android
+GCC 4.9 提供的 GNU binutils。
+
+这仍然是独立构建后走 `TARGET_PREBUILT_KERNEL`，没有切换 ROM 内源码构建或启用
+LTO。以后如果改成 ROM 内编译，需要单独修正上述 `:=` 覆盖，并复现同一套工具链
+参数。
 
 ## 3. 总体策略
 
@@ -292,25 +298,48 @@ git merge --no-ff --no-commit \
 `drivers/gpu/arm/b_r26p0/platform/devicetree/Kbuild`
 本来就提交了残留冲突标记；在独立提交 `4383ad3f2c` 中清理，避免 Make 解析失败。
 
-## 7. 第一阶段构建命令
+## 7. 已验证的第一阶段构建命令
 
-第一版保持和当前已验证 kernel 一样的 GCC 4.9：
+以下命令已在新工作区完整执行成功。Clang 负责 C/汇编编译，Android GCC 4.9
+目录只提供 AArch64/AArch32 GNU binutils：
 
 ```bash
-export ARCH=arm64
-export SUBARCH=arm64
-export CROSS_COMPILE=/home/hajimi/lineageos23.2/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
-export CROSS_COMPILE_ARM32=/home/hajimi/lineageos23.2/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-
-
 KERNEL_SRC=/home/hajimi/android_kernel_samsung_universal7904-4.4.302
-KERNEL_OUT=/home/hajimi/kobj-wisdom-4.4.302
+KERNEL_OUT=/home/hajimi/kobj-wisdom-4.4.302-clang12
+CLANG_BIN=/home/hajimi/lineageos23.2/prebuilts/clang/kernel/linux-x86/clang-r416183b/bin
+GCC64_BIN=/home/hajimi/lineageos23.2/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin
+GCC32_BIN=/home/hajimi/lineageos23.2/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin
 
-make -C "$KERNEL_SRC" O="$KERNEL_OUT" wisdom_defconfig
-make -C "$KERNEL_SRC" O="$KERNEL_OUT" olddefconfig
-make -C "$KERNEL_SRC" O="$KERNEL_OUT" -j"$(nproc)" Image dtbs
+export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+make -C "$KERNEL_SRC" O="$KERNEL_OUT" \
+  ARCH=arm64 SUBARCH=arm64 \
+  CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+  CROSS_COMPILE=aarch64-linux-android- \
+  CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+  wisdom_defconfig
+
+make -C "$KERNEL_SRC" O="$KERNEL_OUT" \
+  ARCH=arm64 SUBARCH=arm64 \
+  CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+  CROSS_COMPILE=aarch64-linux-android- \
+  CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+  olddefconfig
+
+make -C "$KERNEL_SRC" O="$KERNEL_OUT" \
+  ARCH=arm64 SUBARCH=arm64 \
+  CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+  CROSS_COMPILE=aarch64-linux-android- \
+  CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+  -j"$(nproc)" Image dtbs
 ```
 
-第一阶段不同时启用：
+首次完整构建退出码为 0；随后用相同参数重复执行，`Image` 保持 up to date，
+退出码仍为 0。构建中仍有 Samsung 旧驱动的 Clang warning 和 3 条 section
+mismatch warning，必须结合启动日志继续审查，不能把“编译通过”等同于“设备
+运行通过”。
+
+第一阶段没有同时启用：
 
 - Eureka Vortex/Proton Clang。
 - LTO。
@@ -325,7 +354,8 @@ make -C "$KERNEL_SRC" O="$KERNEL_OUT" -j"$(nproc)" Image dtbs
 - `Makefile` 必须显示 `VERSION=4`、`PATCHLEVEL=4`、`SUBLEVEL=302`。
 - `wisdom_defconfig` 能完成 `olddefconfig`。
 - 对比旧/新生成 `.config`，逐项审查新 Kconfig 默认值。
-- `Image`、DTB 和所有启用模块成功生成。
+- `Image` 和配置选择的 DTB/DTBO 成功生成；如 ROM 使用可加载模块，再单独验证
+  `modules` 目标和模块打包。
 - 记录 compiler、UTS version、Image size、SHA-256。
 - 检查 boot partition 32 MiB 大小限制。
 
@@ -386,7 +416,7 @@ make -C "$KERNEL_SRC" O="$KERNEL_OUT" -j"$(nproc)" Image dtbs
 
 ```bash
 sha256sum \
-  /home/hajimi/kobj-wisdom-4.4.302/arch/arm64/boot/Image \
+  /home/hajimi/kobj-wisdom-4.4.302-clang12/arch/arm64/boot/Image \
   /home/hajimi/lineageos23.2/device/samsung/wisdom/prebuilt/Image \
   /home/hajimi/lineageos23.2/out/target/product/wisdom/kernel
 ```
@@ -416,8 +446,32 @@ sha256sum \
   `228624978b`
 - [x] 清理旧树 Mali r26p0 `Kbuild` 残留冲突标记：
   `4383ad3f2c`
-- [ ] 运行 `wisdom_defconfig`、`olddefconfig` 和静态检查。
-- [ ] 完成第一版 GCC 4.9 kernel 构建。
+- [x] 运行 `wisdom_defconfig` 和 `olddefconfig`。
+- [x] 确认 GCC 4.9 被 4.4.302 的最低版本检查拒绝，没有删除检查硬绕过。
+- [x] 用 Clang r416183b（12.0.5）加 GNU 4.9 binutils 完成
+  `Image dtbs` 构建。
+- [x] 修复合并后暴露的源码/构建问题：
+  - `8536d898c9`：删除 SELinux netlink 重复初始化。
+  - `e55c6c7d06`、`99b506e7fe`：修正 TFA9872 enum 返回值及无效自赋值。
+  - `4035e8c299`：删除 MobicoreDriver 的 `kref_read()` 重定义。
+  - `0828708e8d`：修正 out-of-tree firmware blob 生成路径。
+  - `f7989b9505`：futex requeue PI 使用现有 `put_pi_state()`。
+- [x] 验证 `v4.4.302` 和原 LOS23.2 起点都在当前 HEAD ancestry 中。
+- [x] 验证源码无 `<<<<<<<` 残留，`git diff --check` 无报错。
+- [x] 记录首个可构建产物：
+
+  | 项目 | 值 |
+  | --- | --- |
+  | Kernel release | `4.4.302+` |
+  | Compiler | Android Clang `12.0.5` / r416183b |
+  | UTS | `#1 SMP PREEMPT Wed Jul 29 17:38:19 CST 2026` |
+  | Image | `25,863,752` bytes |
+  | Image SHA-256 | `ba11e38816d624c9fe2147280ec30b7240d2b6d48d3e53754768ff3c5ace81bc` |
+  | `.config` SHA-256 | `872226bf6ed1f1eb2fcc42a90593afd5cb33be261f78a038baa7412721721683` |
+
+- [x] 生成 universal7904 DTB/DTBO：
+  `exynos7904-universal7904_P_Treble.dtbo` 和
+  `exynos7904-universal7904_FHD_P_Treble.dtbo`。
 - [ ] 上机验证。
 - [ ] 分批移植 Eureka。
 - [ ] 验证 perfd 0.4.2。
