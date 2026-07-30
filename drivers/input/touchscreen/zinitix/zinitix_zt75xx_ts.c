@@ -31,6 +31,7 @@
 #include <linux/gpio.h>
 #include <linux/uaccess.h>
 #include <linux/regulator/consumer.h>
+#include <linux/pm_qos.h>
 
 #include <linux/i2c/zinitix_bt532_ts.h>
 #include <linux/input/mt.h>
@@ -687,6 +688,7 @@ struct bt532_ts_info {
 	u8 tsp_dump_lock;
 
 	struct completion resume_done;
+	struct pm_qos_request pm_qos_req;
 
 	struct ts_test_result	test_result;
 
@@ -2513,6 +2515,9 @@ static irqreturn_t bt532_touch_work(int irq, void *data)
 
 		return IRQ_HANDLED;
 	}
+
+	/* Keep the CPU out of deep idle while servicing touch I2C traffic. */
+	pm_qos_update_request(&info->pm_qos_req, 100);
 #if ESD_TIMER_INTERVAL
 	esd_timer_stop(info);
 #endif
@@ -2785,6 +2790,7 @@ out:
 		info->work_state = NOTHING;
 	}
 
+	pm_qos_update_request(&info->pm_qos_req, PM_QOS_DEFAULT_VALUE);
 	up(&info->work_lock);
 
 	return IRQ_HANDLED;
@@ -10271,6 +10277,8 @@ static int bt532_ts_probe(struct i2c_client *client,
 	}
 
 	/* ret = request_threaded_irq(info->irq, ts_int_handler, bt532_touch_work,*/
+	pm_qos_add_request(&info->pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
+			PM_QOS_DEFAULT_VALUE);
 	ret = request_threaded_irq(info->irq, NULL, bt532_touch_work,
 		IRQF_TRIGGER_FALLING | IRQF_ONESHOT , BT532_TS_DEVICE, info);
 
@@ -10351,6 +10359,7 @@ err_misc_register:
 #endif
 	free_irq(info->irq, info);
 err_request_irq:
+	pm_qos_remove_request(&info->pm_qos_req);
 error_gpio_irq:
 err_init_touch:
 	if (pdata->support_ear_detect)
@@ -10426,6 +10435,7 @@ static int bt532_ts_remove(struct i2c_client *client)
 
 	if (info->irq)
 		free_irq(info->irq, info);
+	pm_qos_remove_request(&info->pm_qos_req);
 #ifdef USE_MISC_DEVICE
 	misc_deregister(&touch_misc_device);
 #endif
