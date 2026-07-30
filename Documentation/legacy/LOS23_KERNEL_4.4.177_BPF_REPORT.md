@@ -1,4 +1,9 @@
-# LOS23.2 Kernel Bring-up Report
+# Legacy LOS23.2 Linux 4.4.177 BPF Bring-up Report
+
+> Historical record only. This report describes the superseded 4.4.177 BPF
+> bring-up from June 2026; it does not describe the current
+> `lineage-23.2-302` branch. The active plan and verified state are maintained
+> in [`WISDOM_KERNEL_4.4.302_BRINGUP.md`](../../WISDOM_KERNEL_4.4.302_BRINGUP.md).
 
 ## Scope
 
