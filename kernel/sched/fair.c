@@ -2595,13 +2595,13 @@ struct hmp_global_attr {
 #ifdef CONFIG_HMP_FREQUENCY_INVARIANT_SCALE
 #ifdef CONFIG_SCHED_HMP_TASK_BASED_SOFTLANDING
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
-#define HMP_DATA_SYSFS_MAX 23
+#define HMP_DATA_SYSFS_MAX 24
 #else
 #define HMP_DATA_SYSFS_MAX 22
 #endif
 #else
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
-#define HMP_DATA_SYSFS_MAX 17
+#define HMP_DATA_SYSFS_MAX 18
 #else
 #define HMP_DATA_SYSFS_MAX 16
 #endif
@@ -2609,13 +2609,13 @@ struct hmp_global_attr {
 #else
 #ifdef CONFIG_SCHED_HMP_TASK_BASED_SOFTLANDING
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
-#define HMP_DATA_SYSFS_MAX 22
+#define HMP_DATA_SYSFS_MAX 23
 #else
 #define HMP_DATA_SYSFS_MAX 21
 #endif
 #else
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
-#define HMP_DATA_SYSFS_MAX 16
+#define HMP_DATA_SYSFS_MAX 17
 #else
 #define HMP_DATA_SYSFS_MAX 15
 #endif
@@ -2845,6 +2845,26 @@ schedtune_task_margin(struct task_struct *task)
 
 	return margin;
 }
+
+/*
+ * Samsung HMP uses hmp_load_avg instead of the EAS utilization signal for
+ * cluster migration.  Apply the same SchedTune SPC boost to that signal so
+ * Android's per-task boost groups remain effective with the interactive
+ * governor and the legacy HMP placement path.
+ */
+static inline unsigned int
+schedtune_hmp_boosted_load(struct task_struct *task, unsigned int load)
+{
+	int boost = schedtune_task_boost(task);
+	unsigned long boosted_load;
+
+	if (boost <= 0)
+		return load;
+
+	load = min_t(unsigned int, load, SCHED_LOAD_SCALE);
+	boosted_load = load + schedtune_margin(load, boost);
+	return min_t(unsigned long, boosted_load, SCHED_LOAD_SCALE);
+}
 #else /* CONFIG_SCHED_TUNE */
 static inline unsigned int
 schedtune_cpu_margin(unsigned long util, int cpu)
@@ -2856,6 +2876,12 @@ static inline unsigned int
 schedtune_task_margin(struct task_struct *task)
 {
 	return 0;
+}
+
+static inline unsigned int
+schedtune_hmp_boosted_load(struct task_struct *task, unsigned int load)
+{
+	return load;
 }
 #endif
 
@@ -5744,6 +5770,8 @@ static int hmp_aggressive_up_migration;
 static int hmp_aggressive_yield;
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
 static int hmp_selective_boost_val;
+static int hmp_selective_boostpulse;
+static u64 hmp_selective_boostpulse_endtime;
 #endif
 static DEFINE_RAW_SPINLOCK(hmp_boost_lock);
 static DEFINE_RAW_SPINLOCK(hmp_family_boost_lock);
@@ -5789,7 +5817,9 @@ static inline int hmp_semiboost(void)
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
 static inline int hmp_selective_boost(void)
 {
-	if (hmp_selective_boost_val)
+	if (hmp_selective_boost_val ||
+	    ktime_to_us(ktime_get()) <
+			READ_ONCE(hmp_selective_boostpulse_endtime))
 		return 1;
 	return 0;
 }
@@ -6367,6 +6397,28 @@ static int hmp_selective_boost_from_sysfs(int value)
 
 	return ret;
 }
+
+static int hmp_selective_boostpulse_from_sysfs(int duration)
+{
+	u64 endtime;
+	u64 expires;
+	unsigned long flags;
+
+	if (duration < 0 || duration > 5000000)
+		return -EINVAL;
+	if (!duration)
+		return 0;
+
+	expires = ktime_to_us(ktime_get()) + duration;
+
+	raw_spin_lock_irqsave(&hmp_selective_boost_lock, flags);
+	endtime = hmp_selective_boostpulse_endtime;
+	if (expires > endtime)
+		WRITE_ONCE(hmp_selective_boostpulse_endtime, expires);
+	raw_spin_unlock_irqrestore(&hmp_selective_boost_lock, flags);
+
+	return 0;
+}
 #endif
 
 int set_hmp_boost(int enable)
@@ -6546,6 +6598,10 @@ static int hmp_attr_init(void)
 		NULL,
 		hmp_boost_from_sysfs);
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
+	hmp_attr_add("selective_boostpulse",
+		&hmp_selective_boostpulse,
+		NULL,
+		hmp_selective_boostpulse_from_sysfs);
 	hmp_attr_add("selective_boost",
 		&hmp_selective_boost_val,
 		NULL,
@@ -6778,9 +6834,24 @@ static inline unsigned int hmp_offload_down(int cpu, struct sched_entity *se)
 {
 	int min_usage;
 	int dest_cpu = NR_CPUS;
+#ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
+	struct task_struct *p = task_of(se);
+#endif
 
 	if (hmp_cpu_is_slowest(cpu) || hmp_aggressive_up_migration)
 		return NR_CPUS;
+
+#ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
+	/*
+	 * Keep task-level latency-sensitive work in the fast domain.  The
+	 * legacy PowerHAL pulse does not reliably toggle the global HMP
+	 * selective_boost flag, so use the task's cpuset/SchedTune state.
+	 */
+	if (cpuset_task_is_boosted(p) || schedtune_prefer_idle(p)) {
+		trace_sched_hmp_offload_abort(cpu, 0, "prefer_idle");
+		return NR_CPUS;
+	}
+#endif
 
 	/* Is there an idle CPU in the current domain */
 	min_usage = hmp_domain_min_load(hmp_cpu_domain(cpu), NULL, NULL);
@@ -8293,11 +8364,6 @@ void update_group_capacity(struct sched_domain *sd, int cpu)
 	struct sched_domain *child = sd->child;
 	struct sched_group *group, *sdg = sd->groups;
 	unsigned long capacity;
-	unsigned long interval;
-
-	interval = msecs_to_jiffies(sd->balance_interval);
-	interval = clamp(interval, 1UL, max_load_balance_interval);
-	sdg->sgc->next_update = jiffies + interval;
 
 	if (!child) {
 		update_cpu_capacity(sd, cpu);
@@ -8619,9 +8685,7 @@ static inline void update_sd_lb_stats(struct lb_env *env, struct sd_lb_stats *sd
 			sds->local = sg;
 			sgs = &sds->local_stat;
 
-			if (env->idle != CPU_NEWLY_IDLE ||
-			    time_after_eq(jiffies, sg->sgc->next_update))
-				update_group_capacity(env->sd, env->dst_cpu);
+			update_group_capacity(env->sd, env->dst_cpu);
 		}
 
 		update_sg_lb_stats(env, sg, load_idx, local_group, sgs,
@@ -10051,7 +10115,8 @@ static int hmp_selective_migration(int prev_cpu, struct sched_entity *se)
 	struct task_struct *p;
 
 	p = container_of(se, struct task_struct, se);
-	is_boosted_task = cpuset_task_is_boosted(p);
+	is_boosted_task = cpuset_task_is_boosted(p) ||
+			  schedtune_prefer_idle(p);
 
 	/*
 	 * NITP (non-important task packing)
@@ -10092,11 +10157,13 @@ static unsigned int hmp_up_migration(int cpu, int *target_cpu, struct sched_enti
 	struct task_struct *p = task_of(se);
 	int temp_target_cpu;
 	unsigned int up_threshold;
+	unsigned int task_load;
 	unsigned int min_load;
 	u64 now;
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
 	int is_boosted_task =
-		cpuset_task_is_boosted(container_of(se, struct task_struct, se));
+		cpuset_task_is_boosted(container_of(se, struct task_struct, se)) ||
+		schedtune_prefer_idle(p);
 #endif
 
 	if (hmp_cpu_is_fastest(cpu))
@@ -10111,7 +10178,9 @@ static unsigned int hmp_up_migration(int cpu, int *target_cpu, struct sched_enti
 			else
 				up_threshold = hmp_up_threshold;
 
-			if (se->avg.hmp_load_avg < up_threshold)
+			task_load = schedtune_hmp_boosted_load(p,
+						      se->avg.hmp_load_avg);
+			if (task_load < up_threshold)
 				return 0;
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
 		}
@@ -10166,6 +10235,16 @@ static unsigned int hmp_down_migration(int cpu, struct sched_entity *se)
 			return 0;
 	}
 
+#ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
+	/*
+	 * Keep task-level latency-sensitive work in the fast domain.  Do not
+	 * depend on the global selective_boost pulse: it remains zero on this
+	 * device even while top-app/foreground SchedTune state is active.
+	 */
+	if (cpuset_task_is_boosted(p) || schedtune_prefer_idle(p))
+		return 0;
+#endif
+
 	/* Let the task load settle before doing another down migration */
 	now = cpu_rq(cpu)->clock_task;
 	if (((now - se->avg.hmp_last_down_migration) >> 10)
@@ -10187,13 +10266,16 @@ static unsigned int hmp_down_migration(int cpu, struct sched_entity *se)
 	if (cpumask_intersects(&hmp_slower_domain(cpu)->cpus,
 					tsk_cpus_allowed(p))) {
 		unsigned int down_threshold;
+		unsigned int task_load;
 
 		if (hmp_semiboost())
 			down_threshold = hmp_semiboost_down_threshold;
 		else
 			down_threshold = hmp_down_threshold;
 
-		if (se->avg.hmp_load_avg < down_threshold)
+		task_load = schedtune_hmp_boosted_load(p,
+						      se->avg.hmp_load_avg);
+		if (task_load < down_threshold)
 			return 1;
 	}
 	return 0;
@@ -10612,7 +10694,8 @@ static unsigned int hmp_idle_pull(int this_cpu)
 	unsigned long flags,ratio = 0;
 	unsigned int force=0;
 	unsigned int up_threshold;
-	struct task_struct *p = NULL;
+	unsigned int task_load;
+	struct task_struct *p = NULL, *candidate;
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
 	int is_boosted_task = 0;
 #endif
@@ -10649,25 +10732,28 @@ static unsigned int hmp_idle_pull(int this_cpu)
 		}
 		orig = curr;
 		curr = hmp_get_heaviest_task(curr, 1);
+		candidate = task_of(curr);
+		task_load = schedtune_hmp_boosted_load(candidate,
+						       curr->avg.hmp_load_avg);
 		if (hmp_semiboost())
 			up_threshold = hmp_semiboost_up_threshold;
 		else
 			up_threshold = hmp_up_threshold;
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
-		if (p != NULL)
-			is_boosted_task = cpuset_task_is_boosted(p);
+		is_boosted_task = cpuset_task_is_boosted(candidate) ||
+				  schedtune_prefer_idle(candidate);
 #endif
-		if (hmp_boost() || curr->avg.hmp_load_avg > up_threshold
+		if (hmp_boost() || task_load > up_threshold
 #ifdef CONFIG_SCHED_HMP_SELECTIVE_BOOST_WITH_NITP
 			|| (hmp_selective_boost() && is_boosted_task)
 #endif
 			)
-			if (curr->avg.hmp_load_avg > ratio) {
+			if (task_load > ratio) {
 				if (p)
 					put_task_struct(p);
-				p = task_of(curr);
+				p = candidate;
 				target = rq;
-				ratio = curr->avg.hmp_load_avg;
+				ratio = task_load;
 				get_task_struct(p);
 			}
 		raw_spin_unlock_irqrestore(&rq->lock, flags);
@@ -11742,5 +11828,3 @@ static int __init hmp_tbsoftlanding_init(void)
 }
 late_initcall(hmp_tbsoftlanding_init);
 #endif	/* CONFIG_SCHED_HMP_TASK_BASED_SOFTLANDING */
-
-
