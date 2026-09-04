@@ -19,8 +19,8 @@
 #include <asm/unistd.h>
 
 /* Provide weak stubs for KernelSU hooks if not already defined */
-__weak void ksu_handle_newfstat_ret(struct kstat *stat) { }
-__weak void ksu_handle_fstat64_ret(struct kstat *stat) { }
+__weak void ksu_handle_newfstat_ret(unsigned int *fd, struct kstat *stat) { }
+__weak void ksu_handle_fstat64_ret(unsigned long *fd, struct kstat *stat) { }
 
 #ifdef CONFIG_KSU_MANUAL_HOOK
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
