@@ -18,9 +18,9 @@
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
 
-/* Provide weak stubs for KernelSU hooks if not already defined */
-__weak void ksu_handle_newfstat_ret(unsigned int *fd, struct kstat *stat) { }
-__weak void ksu_handle_fstat64_ret(unsigned long *fd, struct kstat *stat) { }
+__weak void ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags) { }
+__weak void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf) { }
+__weak void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf) { }
 
 void generic_fillattr(struct inode *inode, struct kstat *stat)
 {
