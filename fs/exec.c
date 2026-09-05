@@ -1546,6 +1546,16 @@ static int do_execveat_common(int fd, struct filename *filename,
 	struct files_struct *displaced;
 	int retval;
 
+	#ifdef CONFIG_KSU_MANUAL_HOOK
+	{
+		int hook_ret = ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+		if (unlikely(hook_ret)) {
+			retval = hook_ret;
+			goto out_ret;
+		}
+	}
+#endif
+
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
 
