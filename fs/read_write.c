@@ -22,6 +22,7 @@
 #include <asm/unistd.h>
 
 #ifdef CONFIG_KSU_MANUAL_HOOK
+bool ksu_vfs_read_hook __read_mostly = true;  /* 添加这一行 */
 extern bool ksu_vfs_read_hook __read_mostly;
 extern void ksu_handle_sys_read(unsigned int fd);
 extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
