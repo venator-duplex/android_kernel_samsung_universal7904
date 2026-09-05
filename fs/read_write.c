@@ -569,7 +569,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	struct fd f = fdget_pos(fd);
 	ssize_t ret = -EBADF;
 
-#if 0
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	if (unlikely(ksu_vfs_read_hook))
 		ksu_handle_sys_read(fd);
 #endif
