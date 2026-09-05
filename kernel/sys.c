@@ -65,6 +65,12 @@
 #include <asm/io.h>
 #include <asm/unistd.h>
 
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern int ksu_handle_setresuid(uid_t *ruid, uid_t *euid, uid_t *suid);
+extern int ksu_handle_sys_reboot(int *magic1, int *magic2, unsigned int *cmd,
+                                 void __user **arg);
+#endif
+
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
 #endif
@@ -588,6 +594,14 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	struct cred *new;
 	int retval;
 	kuid_t kruid, keuid, ksuid;
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	{
+		int hook_ret = ksu_handle_setresuid(&ruid, &euid, &suid);
+		if (unlikely(hook_ret))
+			return hook_ret;
+	}
+#endif
 
 	kruid = make_kuid(ns, ruid);
 	keuid = make_kuid(ns, euid);
