@@ -306,7 +306,11 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
 	int error;
 
 #ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_stat(&dfd, &filename, &flag);
+	{
+		int hook_ret = ksu_handle_stat(&dfd, &filename, &flag);
+		if (unlikely(hook_ret))
+			return hook_ret;
+	}
 #endif
 
 	error = vfs_fstatat(dfd, filename, &stat, flag);
@@ -460,7 +464,11 @@ SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user *, filename,
 	int error;
 
 #ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_stat(&dfd, &filename, &flag);
+	{
+		int hook_ret = ksu_handle_stat(&dfd, &filename, &flag);
+		if (unlikely(hook_ret))
+			return hook_ret;
+	}
 #endif
 
 	error = vfs_fstatat(dfd, filename, &stat, flag);
