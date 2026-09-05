@@ -24,8 +24,6 @@
 #ifdef CONFIG_KSU_MANUAL_HOOK
 bool __read_mostly ksu_vfs_read_hook = true;
 extern void ksu_handle_sys_read(unsigned int fd);
-extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
-                               size_t *count_ptr, loff_t **pos);
 #endif
 
 const struct file_operations generic_ro_fops = {
