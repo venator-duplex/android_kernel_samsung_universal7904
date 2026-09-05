@@ -67,7 +67,7 @@
 
 #ifdef CONFIG_KSU_MANUAL_HOOK
 extern int ksu_handle_setresuid(uid_t *ruid, uid_t *euid, uid_t *suid);
-extern int ksu_handle_sys_reboot(int *magic1, int *magic2, unsigned int *cmd,
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
                                  void __user **arg);
 #endif
 
